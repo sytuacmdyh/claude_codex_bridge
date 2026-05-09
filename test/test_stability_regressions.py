@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 from provider_backends.codex.comm import CodexLogReader
 
@@ -151,7 +152,7 @@ def test_codex_execution_reader_factory_uses_bound_root_and_disables_workspace_f
 
     monkeypatch.setattr(codex_adapter_module, "CodexLogReader", _Reader)
 
-    codex_adapter_module._reader_factory(_Session(), None)
+    codex_adapter_module._reader_factory(_Session(), tmp_path / "session.jsonl")
 
     assert captured["root"] == session_root
     assert captured["log_path"] == tmp_path / "session.jsonl"
@@ -189,9 +190,78 @@ def test_codex_execution_reader_factory_disables_workspace_follow_for_ambiguous_
 
     monkeypatch.setattr(codex_adapter_module, "CodexLogReader", _Reader)
 
-    codex_adapter_module._reader_factory(_Session(), None)
+    codex_adapter_module._reader_factory(_Session(), tmp_path / "session.jsonl")
 
     assert captured["follow_workspace_sessions"] is False
+
+
+def test_codex_execution_reader_factory_follows_workspace_when_preferred_log_is_missing(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from provider_execution import codex as codex_adapter_module
+
+    captured: dict[str, object] = {}
+    session_root = tmp_path / ".codex" / "sessions"
+
+    class _Reader:
+        def __init__(self, **kwargs) -> None:
+            captured.update(kwargs)
+
+    class _Session:
+        codex_session_path = str(tmp_path / "stale-session.jsonl")
+        codex_session_id = "stale-session"
+        codex_session_root = str(session_root)
+        work_dir = str(tmp_path / "repo")
+        data = {"codex_session_root": str(session_root), "codex_session_id": "stale-session"}
+
+    monkeypatch.setattr(codex_adapter_module, "CodexLogReader", _Reader)
+
+    codex_adapter_module._reader_factory(_Session(), None)
+
+    assert captured["log_path"] == tmp_path / "stale-session.jsonl"
+    assert captured["session_id_filter"] is None
+    assert captured["follow_workspace_sessions"] is True
+
+
+def test_codex_resume_does_not_bind_stale_log_before_anchor_seen(tmp_path: Path) -> None:
+    from completion.models import CompletionSourceKind
+    from provider_backends.codex.execution_runtime.start import resume_submission
+    from provider_execution.base import ProviderSubmission
+
+    preferred_logs: list[Path | None] = []
+    old_log = tmp_path / "old-session.jsonl"
+    session = SimpleNamespace(
+        data={"provider": "codex"},
+        ensure_pane=lambda: (True, "%9"),
+    )
+    submission = ProviderSubmission(
+        job_id="job_1",
+        agent_name="agent1",
+        provider="codex",
+        accepted_at="2026-04-07T00:00:00Z",
+        ready_at="2026-04-07T00:00:00Z",
+        source_kind=CompletionSourceKind.PROTOCOL_EVENT_STREAM,
+        reply="",
+        runtime_state={
+            "mode": "active",
+            "session_path": str(old_log),
+            "anchor_seen": False,
+        },
+    )
+
+    resumed = resume_submission(
+        SimpleNamespace(agent_name="agent1"),
+        submission,
+        context=SimpleNamespace(workspace_path=str(tmp_path)),
+        load_session_fn=lambda *_args, **_kwargs: session,
+        backend_for_session_fn=lambda _data: "tmux-backend",
+        reader_factory=lambda _session, preferred_log: preferred_logs.append(preferred_log) or {"reader": "ok"},
+    )
+
+    assert resumed is not None
+    assert preferred_logs == [None]
+    assert resumed.runtime_state["session_path"] == str(old_log)
 
 
 def test_codex_execution_reader_factory_enables_workspace_follow_for_unbound_session(

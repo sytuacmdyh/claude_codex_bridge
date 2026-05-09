@@ -88,8 +88,12 @@ def test_load_project_config_rejects_case_insensitive_duplicates(tmp_path: Path)
         load_project_config(project_root)
 
 
-def test_load_project_config_uses_builtin_default_when_project_config_is_missing(tmp_path: Path) -> None:
+def test_load_project_config_uses_builtin_default_when_project_config_is_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     project_root = tmp_path / 'repo'
+    monkeypatch.setenv('HOME', str(tmp_path / 'home-without-config'))
     config = build_default_project_config()
     assert config.default_agents == ('agent1', 'agent2', 'agent3')
     assert config.cmd_enabled is True
@@ -106,8 +110,12 @@ def test_load_project_config_uses_builtin_default_when_project_config_is_missing
     assert loaded.config.agents['agent1'].runtime_mode is RuntimeMode.PANE_BACKED
 
 
-def test_ensure_default_project_config_creates_anchor_without_writing_config(tmp_path: Path) -> None:
+def test_ensure_default_project_config_creates_anchor_without_writing_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     project_root = tmp_path / 'repo'
+    monkeypatch.setenv('HOME', str(tmp_path / 'home-without-config'))
 
     config_path = ensure_default_project_config(project_root)
 
@@ -116,9 +124,13 @@ def test_ensure_default_project_config_creates_anchor_without_writing_config(tmp
     assert config_path.exists() is False
 
 
-def test_ensure_bootstrap_project_config_allows_empty_anchor(tmp_path: Path) -> None:
+def test_ensure_bootstrap_project_config_allows_empty_anchor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     project_root = tmp_path / 'repo-empty-anchor'
     (project_root / '.ccb').mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv('HOME', str(tmp_path / 'home-without-config'))
 
     config_path = ensure_bootstrap_project_config(project_root)
 
@@ -126,9 +138,13 @@ def test_ensure_bootstrap_project_config_allows_empty_anchor(tmp_path: Path) -> 
     assert config_path.exists() is False
 
 
-def test_ensure_bootstrap_project_config_allows_persisted_state_without_writing_config(tmp_path: Path) -> None:
+def test_ensure_bootstrap_project_config_allows_persisted_state_without_writing_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     project_root = tmp_path / 'repo-missing-config-with-state'
     runtime_path = project_root / '.ccb' / 'agents' / 'demo' / 'runtime.json'
+    monkeypatch.setenv('HOME', str(tmp_path / 'home-without-config'))
     _write(runtime_path, '{"agent_name":"demo"}\n')
 
     config_path = ensure_bootstrap_project_config(project_root)
@@ -148,8 +164,12 @@ def test_load_project_config_supports_explicit_worktree_suffix_in_compact_config
     assert result.config.layout_spec == 'cmd; agent1:codex(worktree), agent2:claude'
 
 
-def test_ensure_bootstrap_project_config_ignores_session_residue_without_writing_config(tmp_path: Path) -> None:
+def test_ensure_bootstrap_project_config_ignores_session_residue_without_writing_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     project_root = tmp_path / 'repo-session-residue'
+    monkeypatch.setenv('HOME', str(tmp_path / 'home-without-config'))
     _write(project_root / '.ccb' / '.codex-agent1-session', '{}\n')
     _write(project_root / '.ccb' / '.claude-agent3-session', '{}\n')
 
@@ -191,7 +211,7 @@ def test_cmd_cannot_be_used_as_agent_name(tmp_path: Path) -> None:
         load_project_config(project_root)
 
 
-def test_load_project_config_requires_project_local_file_even_when_home_has_config(
+def test_load_project_config_uses_global_config_when_project_config_is_missing(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -204,13 +224,42 @@ def test_load_project_config_requires_project_local_file_even_when_home_has_conf
 
     result = load_project_config(project_root)
 
-    assert result.source_path is None
-    assert result.used_default is True
-    assert result.config.default_agents == ('agent1', 'agent2', 'agent3')
-    assert result.config.agents['agent1'].provider == 'codex'
-    assert result.config.agents['agent2'].provider == 'codex'
-    assert result.config.agents['agent3'].provider == 'claude'
+    assert result.source_path == global_config
+    assert result.used_default is False
+    assert result.config.default_agents == ('agent1',)
+    assert result.config.agents['agent1'].provider == 'claude'
 
+
+def test_ensure_bootstrap_project_config_copies_global_config_when_project_config_is_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = tmp_path / 'home'
+    global_config = home / '.ccb' / 'ccb.config'
+    project_root = tmp_path / 'repo'
+    monkeypatch.setenv('HOME', str(home))
+    _write(global_config, 'agent1:claude\n')
+
+    config_path = ensure_bootstrap_project_config(project_root)
+
+    assert config_path == project_root.resolve() / '.ccb' / 'ccb.config'
+    assert config_path.read_text(encoding='utf-8') == 'agent1:claude\n'
+
+
+def test_load_project_config_prefers_project_config_over_global_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = tmp_path / 'home'
+    project_root = tmp_path / 'repo'
+    monkeypatch.setenv('HOME', str(home))
+    _write(home / '.ccb' / 'ccb.config', 'agent1:claude\n')
+    _write(project_root / '.ccb' / 'ccb.config', 'agent1:codex\n')
+
+    result = load_project_config(project_root)
+
+    assert result.source_path == project_root / '.ccb' / 'ccb.config'
+    assert result.config.agents['agent1'].provider == 'codex'
 
 
 def test_load_project_config_supports_toml_provider_profile(tmp_path: Path) -> None:

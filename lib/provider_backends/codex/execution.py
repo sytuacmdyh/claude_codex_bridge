@@ -82,15 +82,23 @@ class CodexProviderAdapter:
 
 def _reader_factory(session, preferred_log: Path | None):
     work_dir = Path(session.work_dir)
+    session_id_filter = session.codex_session_id or None
+    follow_workspace = should_follow_workspace_sessions(
+        work_dir=work_dir,
+        session_file=getattr(session, "session_file", None),
+        session_data=getattr(session, "data", None),
+    )
+    log_path = preferred_log if preferred_log is not None else (
+        Path(session.codex_session_path).expanduser() if session.codex_session_path else None
+    )
+    if preferred_log is None:
+        session_id_filter = None
+        follow_workspace = True
     kwargs: dict[str, object] = {
-        "log_path": preferred_log if preferred_log is not None else (Path(session.codex_session_path).expanduser() if session.codex_session_path else None),
-        "session_id_filter": session.codex_session_id or None,
+        "log_path": log_path,
+        "session_id_filter": session_id_filter,
         "work_dir": work_dir,
-        "follow_workspace_sessions": should_follow_workspace_sessions(
-            work_dir=work_dir,
-            session_file=getattr(session, "session_file", None),
-            session_data=getattr(session, "data", None),
-        ),
+        "follow_workspace_sessions": follow_workspace,
     }
     session_root = codex_session_root_path(getattr(session, "data", None))
     if session_root is not None:

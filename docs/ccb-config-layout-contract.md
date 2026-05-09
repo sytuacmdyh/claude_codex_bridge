@@ -8,7 +8,7 @@ It is the authoritative design anchor for:
 
 - `.ccb/ccb.config`
 - compact layout grammar
-- built-in default config fallback
+- global and built-in default config fallback
 - pane naming and pane color identity
 - tmux split sizing rules for the project UI
 
@@ -16,8 +16,8 @@ It is the authoritative design anchor for:
 
 - `.ccb/ccb.config` is the only user-facing project config file.
 - CCB must not auto-create, reconstruct, or rewrite `.ccb/ccb.config`; it is a user-authored project file.
-- When `.ccb/ccb.config` is absent, config loading must use the built-in default project config from code and report the source as `<default>`.
-- CCB must not read an implicit global `~/.ccb/ccb.config` or install-location config as a fallback.
+- When `.ccb/ccb.config` is absent and `~/.ccb/ccb.config` exists, config loading must use that global config.
+- When both project and global config are absent, config loading must use the built-in default project config from code and report the source as `<default>`.
 - User help text, validation output, diagnostics, and docs must point to `.ccb/ccb.config`.
 - `.ccb/config.yaml` is not part of the contract and must not be read or written by current code.
 

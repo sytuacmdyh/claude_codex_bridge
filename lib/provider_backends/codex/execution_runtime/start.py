@@ -100,7 +100,8 @@ def resume_submission(
     if backend is None:
         return None
     preferred_log = preferred_log_path(state)
-    reader = reader_factory(session, preferred_log)
+    reader_preferred_log = preferred_log if bool(state.get('anchor_seen', False)) else None
+    reader = reader_factory(session, reader_preferred_log)
     return replace(
         submission,
         runtime_state={

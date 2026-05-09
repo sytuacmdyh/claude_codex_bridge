@@ -2582,6 +2582,10 @@ def test_ccb_two_named_codex_agents_concurrent_ask_isolated(monkeypatch, tmp_pat
         def __init__(self, *args, **kwargs) -> None:
             self.session_id = str(kwargs.get('session_id_filter') or '')
             self.log_path = str(kwargs.get('log_path') or '')
+            if not self.session_id and self.log_path == str(tmp_path / 'agent1-session.jsonl'):
+                self.session_id = 'agent1-session-id'
+            if not self.session_id and self.log_path == str(tmp_path / 'agent2-session.jsonl'):
+                self.session_id = 'agent2-session-id'
             if self.session_id == 'agent1-session-id':
                 self._events = [
                     {
@@ -2802,6 +2806,10 @@ def test_ccb_two_named_codex_agents_recover_after_ccbd_restart(monkeypatch, tmp_
         def __init__(self, *args, **kwargs) -> None:
             self.session_id = str(kwargs.get('session_id_filter') or '')
             self.log_path = str(kwargs.get('log_path') or '')
+            if not self.session_id and self.log_path == str(tmp_path / 'agent1-session.jsonl'):
+                self.session_id = 'agent1-session-id'
+            if not self.session_id and self.log_path == str(tmp_path / 'agent2-session.jsonl'):
+                self.session_id = 'agent2-session-id'
             reader_instances[self.session_id] = reader_instances.get(self.session_id, 0) + 1
             if self.session_id == 'agent1-session-id':
                 self._events = [
