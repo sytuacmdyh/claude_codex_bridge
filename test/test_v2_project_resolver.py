@@ -78,6 +78,10 @@ def test_bootstrap_project_creates_anchor_without_project_config(tmp_path: Path)
     context = bootstrap_project(project_root)
     assert (project_root / '.ccb').is_dir()
     assert not (project_root / '.ccb' / 'ccb.config').exists()
+    assert (project_root / 'AGENTS.md').is_file()
+    content = (project_root / 'AGENTS.md').read_text(encoding='utf-8')
+    assert '<!-- CCB_ROLES_START -->' in content
+    assert '<!-- REVIEW_RUBRICS_START -->' in content
     assert context.source == 'bootstrapped'
 
 
@@ -89,6 +93,27 @@ def test_bootstrap_project_blocks_nested_auto_create_when_parent_anchor_exists(t
 
     with pytest.raises(ValueError, match='parent project anchor already exists'):
         bootstrap_project(nested_root)
+
+
+def test_bootstrap_project_merges_ccb_blocks_into_existing_agents_md(tmp_path: Path) -> None:
+    project_root = tmp_path / 'repo-existing-agents'
+    project_root.mkdir()
+    agents_md = project_root / 'AGENTS.md'
+    agents_md.write_text(
+        '# Project Notes\n\n'
+        '<!-- CCB_ROLES_START -->old roles<!-- CCB_ROLES_END -->\n\n'
+        '<!-- REVIEW_RUBRICS_START -->old rubrics<!-- REVIEW_RUBRICS_END -->\n',
+        encoding='utf-8',
+    )
+
+    bootstrap_project(project_root)
+
+    content = agents_md.read_text(encoding='utf-8')
+    assert '# Project Notes' in content
+    assert 'old roles' not in content
+    assert 'old rubrics' not in content
+    assert '<!-- CCB_ROLES_START -->' in content
+    assert '<!-- REVIEW_RUBRICS_START -->' in content
 
 
 def test_resolve_prefers_local_anchor_over_parent_anchor(tmp_path: Path) -> None:

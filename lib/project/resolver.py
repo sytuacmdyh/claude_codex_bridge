@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import os
 from pathlib import Path
+import re
 
 from agents.config_loader import ensure_bootstrap_project_config
 from project.discovery import (
@@ -71,8 +72,11 @@ def bootstrap_project(project_root: Path) -> ProjectContext:
             f'refusing to auto-create .ccb in {danger_reason}; '
             'set CCB_INIT_PROJECT_DANGEROUS=1 to override'
         )
+    creating_new_anchor = not config_dir.exists()
     config_dir.mkdir(parents=False, exist_ok=True)
     ensure_bootstrap_project_config(root)
+    if creating_new_anchor:
+        _force_initialize_project_agents_md(root)
     return _project_context(root, root, source='bootstrapped')
 
 
@@ -126,3 +130,46 @@ def _nested_anchor_bootstrap_error(project_root: Path, parent_root: Path) -> str
         f'If you intentionally want {project_root} to be a separate project, '
         f'create {project_ccb_dir(project_root)} manually and rerun'
     )
+
+
+def _force_initialize_project_agents_md(project_root: Path) -> None:
+    template_path = Path(__file__).resolve().parents[2] / 'config' / 'agents-md-ccb.md'
+    if not template_path.is_file():
+        return
+
+    try:
+        template_text = template_path.read_text(encoding='utf-8').strip()
+    except Exception:
+        return
+
+    if not template_text:
+        return
+
+    agents_md_path = project_root / 'AGENTS.md'
+    if not agents_md_path.exists():
+        agents_md_path.write_text(template_text + '\n', encoding='utf-8')
+        return
+
+    try:
+        existing = agents_md_path.read_text(encoding='utf-8')
+    except Exception:
+        existing = ''
+
+    updated = re.sub(
+        r'<!-- CCB_ROLES_START -->.*?<!-- CCB_ROLES_END -->',
+        '',
+        existing,
+        flags=re.DOTALL,
+    )
+    updated = re.sub(
+        r'<!-- REVIEW_RUBRICS_START -->.*?<!-- REVIEW_RUBRICS_END -->',
+        '',
+        updated,
+        flags=re.DOTALL,
+    ).rstrip()
+
+    if updated:
+        rendered = updated + '\n\n' + template_text + '\n'
+    else:
+        rendered = template_text + '\n'
+    agents_md_path.write_text(rendered, encoding='utf-8')

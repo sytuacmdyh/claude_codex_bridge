@@ -1,23 +1,23 @@
 <!-- CCB_ROLES_START -->
 ## Role Assignment
 
-Abstract roles map to concrete AI providers. Skills reference roles, not providers directly.
+Abstract roles map to concrete agents defined by the current project layout. Skills reference roles, not providers directly.
 
-| Role | Provider | Description |
-|------|----------|-------------|
-| `designer` | `claude` | Primary planner and architect — owns plans and designs |
-| `inspiration` | `gemini` | Creative brainstorming — provides ideas as reference only (unreliable, never blindly follow) |
-| `reviewer` | `codex` | Scored quality gate — evaluates plans/code using Rubrics |
-| `executor` | `claude` | Code implementation — writes and modifies code |
+| Role | Agent | Description |
+|------|-------|-------------|
+| `designer` | `<agent-name>` | Primary planner and architect — owns plans and designs |
+| `inspiration` | `<agent-name>` | Creative brainstorming — provides ideas as reference only |
+| `reviewer` | `<agent-name>` | Scored quality gate — evaluates plans/code using Rubrics |
+| `executor` | `<agent-name>` | Code implementation — writes and modifies code |
 
-To change a role assignment, edit the Provider column above.
-When a skill references a role (e.g. `reviewer`), resolve it to the provider listed here.
+Role assignment authority: `.ccb/ccb.config` in the current project is the single source of truth.
+The table above is illustrative only. When a skill references a role (e.g. `reviewer`), resolve it from `.ccb/ccb.config`.
 <!-- CCB_ROLES_END -->
 
 <!-- REVIEW_RUBRICS_START -->
 ## Review Rubrics & Templates
 
-When you (Codex) receive a review request from the `designer`, use these rubrics to score.
+When the `reviewer` receives a review request from the `designer`, use these rubrics to score.
 
 ### Rubric A: Plan Review (5 dimensions, each 1-10)
 
