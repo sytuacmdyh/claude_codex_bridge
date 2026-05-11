@@ -31,6 +31,48 @@ cd claude_codex_bridge
 ccb --help
 ```
 
+如果提示 `ccb: command not found`（或“找不到 ccb”），通常是 **PATH 没包含默认安装目录 `~/.local/bin`**，或者你还没让当前 shell 重新加载配置。
+
+先用下面命令确认 `ccb` 是否已经被安装到了 `~/.local/bin`：
+
+```bash
+ls -l ~/.local/bin/ccb || true
+command -v ccb || true
+```
+
+然后按你的 shell 选择一种方式让 PATH 立即生效：
+
+- **bash**（Linux/WSL 常见）：
+
+```bash
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
+source ~/.bashrc
+hash -r
+```
+
+- **zsh**（macOS 常见）：
+
+```bash
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
+source ~/.zshrc
+rehash
+```
+
+- **fish**：
+
+```bash
+mkdir -p ~/.config/fish
+echo 'fish_add_path -g $HOME/.local/bin' >> ~/.config/fish/config.fish
+source ~/.config/fish/config.fish
+```
+
+最后再次验证：
+
+```bash
+command -v ccb
+ccb --help
+```
+
 ## 3. 初始化项目配置（最小可用）
 
 在你的项目根目录创建 `.ccb/ccb.config`：
@@ -48,8 +90,24 @@ cmd; writer:claude, reviewer:codex
 
 角色分配说明：
 
-- 角色（如 `writer`、`reviewer`）的唯一权威来源是项目内 `.ccb/ccb.config`
+- 若项目里存在 `.ccb/ccb.config`，角色与布局以该文件为准
+- 若项目里**还没有** `.ccb/ccb.config`，但本机存在 `~/.ccb/ccb.config`：在你执行 `ccb` 启动或多数子命令（如 `ccb ask`）时，CCB 会先把全局文件**复制一份**到当前项目的 `.ccb/ccb.config`，之后以项目内这份文件为准；改全局默认不会自动同步到已有项目文件
+- 若既没有项目文件也没有全局文件，运行时使用内置默认布局（来源在诊断里会显示为 `<default>`）；此时不会自动在项目里写出 `ccb.config`
 - 评审规则文档中的角色表仅作示意，不作为真实配置来源
+
+### 全局默认 `ccb.config`（可选）
+
+希望多个仓库在未单独写项目配置时共用同一套布局，可在本机创建 `~/.ccb/ccb.config`，语法与项目内 `.ccb/ccb.config` 相同。
+
+```bash
+mkdir -p ~/.ccb
+# 按需编辑 ~/.ccb/ccb.config，例如：
+# cmd; writer:claude, reviewer:codex
+```
+
+**启动时的行为摘要**：存在全局 `ccb.config` 且项目缺少该文件时，会在进入启动流程前**写入**项目 `.ccb/ccb.config`（内容来自全局的一次性复制）。读取配置的优先级为：**项目** `.ccb/ccb.config`（含复制生成后的）→ 仅当项目仍无该文件时读 **全局** `~/.ccb/ccb.config` → **内置**默认。`ccb kill` 与 `ccb config validate` 等不会触发上述复制逻辑。
+
+全局文件需你自行创建与维护；复制到项目后，可按仓库单独再编辑 `.ccb/ccb.config`。
 
 ## 4. 启动 Agent 团队
 
@@ -117,6 +175,22 @@ git pull
 
 ## 8. 常见问题（快速排查）
 
+### 执行时报错：找不到 ccb / command not found
+
+- 确认 `~/.local/bin/ccb` 是否存在：
+
+```bash
+ls -l ~/.local/bin/ccb
+```
+
+- 确认 `~/.local/bin` 是否在 PATH 里：
+
+```bash
+echo "$PATH" | tr ':' '\n' | sed -n '1,200p'
+```
+
+- 如果你的 shell 是 **fish**：安装脚本不会自动改 fish 的 PATH，请按上面 **fish** 小节把 `~/.local/bin` 加进去，然后重新打开终端或 `source` 配置文件。
+
 ### 启动时报 tmux 相关错误
 
 - 确认 `tmux -V` 正常
@@ -124,7 +198,7 @@ git pull
 
 ### Agent 没有按预期启动
 
-- 检查 `.ccb/ccb.config` 是否有语法问题
+- 检查项目 `.ccb/ccb.config` 或全局 `~/.ccb/ccb.config`（若项目无配置文件）是否有语法问题
 - 先执行 `ccb kill -f`，再执行 `ccb -n` 重建运行态
 
 ### WSL 项目在挂载盘（`/mnt/...`）下
