@@ -163,6 +163,7 @@ ccb -n    # 重建 .ccb（保留 ccb.config）后启动
 ```bash
 ccb kill      # 停止当前项目后台运行态
 ccb kill -f   # 强制清理（适合异常残留后重启）
+ccb resync-skills # 仅重装技能（不做完整重装）
 ccb uninstall # 卸载
 ```
 
@@ -171,6 +172,7 @@ ccb uninstall # 卸载
 ```bash
 git pull
 ./install.sh install
+./install.sh install-skills  # 仅重装 Claude/Codex/Droid skills
 ```
 
 ## 8. 常见问题（快速排查）

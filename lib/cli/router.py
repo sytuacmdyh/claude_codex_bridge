@@ -8,7 +8,7 @@ from textwrap import dedent
 AuxiliaryHandler = Callable[[Sequence[str]], int]
 ManagementHandler = Callable[[argparse.Namespace], int]
 
-_MANAGEMENT_COMMANDS = {"update", "version", "uninstall", "reinstall"}
+_MANAGEMENT_COMMANDS = {"update", "version", "uninstall", "reinstall", "resync-skills"}
 
 
 def dispatch_auxiliary_command(
@@ -29,6 +29,7 @@ def dispatch_management_command(
     version_handler: ManagementHandler,
     uninstall_handler: ManagementHandler,
     reinstall_handler: ManagementHandler,
+    resync_skills_handler: ManagementHandler,
 ) -> int | None:
     tokens = list(argv)
     if not tokens or tokens[0] not in _MANAGEMENT_COMMANDS:
@@ -44,6 +45,8 @@ def dispatch_management_command(
         return uninstall_handler(args)
     if args.command == "reinstall":
         return reinstall_handler(args)
+    if args.command == "resync-skills":
+        return resync_skills_handler(args)
     parser.print_help()
     return 1
 
@@ -73,7 +76,7 @@ def print_start_help(*, file=None) -> None:
 
             Advanced diagnostics:
               ccb ps | ccb logs <agent> | ccb doctor
-              ccb version | ccb update | ccb uninstall | ccb reinstall
+              ccb version | ccb update | ccb uninstall | ccb reinstall | ccb resync-skills
             """
         ).strip(),
         file=file,
@@ -177,6 +180,7 @@ def _build_management_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("version", help="Show version and check for updates")
     subparsers.add_parser("uninstall", help="Uninstall ccb and clean configs")
     subparsers.add_parser("reinstall", help="Reinstall ccb and refresh configs")
+    subparsers.add_parser("resync-skills", help="Re-install skills without full reinstall")
     return parser
 
 

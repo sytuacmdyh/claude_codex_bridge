@@ -3,6 +3,7 @@ from __future__ import annotations
 from .management_runtime import (
     cleanup_claude_files,
     cmd_reinstall,
+    cmd_resync_skills,
     cmd_uninstall,
     cmd_update,
     cmd_version,
@@ -23,6 +24,7 @@ from .management_runtime import (
 __all__ = [
     "cleanup_claude_files",
     "cmd_reinstall",
+    "cmd_resync_skills",
     "cmd_uninstall",
     "cmd_update",
     "cmd_version",

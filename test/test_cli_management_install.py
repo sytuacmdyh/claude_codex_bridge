@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
 
 from cli.management_runtime import install as install_runtime
+from cli.management_runtime.commands_runtime.install import cmd_resync_skills
 
 
 def test_resolve_installer_paths_uses_live_source_repo_with_managed_prefix(monkeypatch, tmp_path: Path) -> None:
@@ -69,3 +71,25 @@ def test_run_installer_stages_and_normalizes_crlf_checkout(tmp_path: Path) -> No
     ran_from = marker_path.read_text(encoding="utf-8").strip()
     assert ran_from != str(install_sh)
     assert "ccb-installer-" in ran_from
+
+
+def test_cmd_resync_skills_forwards_install_skills_action(tmp_path: Path) -> None:
+    source_dir = tmp_path / "source-install"
+    source_dir.mkdir()
+    (source_dir / "install.sh").write_bytes(
+        b"#!/usr/bin/env bash\n"
+        b"set -euo pipefail\n"
+        b'printf "%s" "$1" > "$CODEX_INSTALL_PREFIX/action.txt"\n'
+    )
+    (source_dir / ".git").mkdir()
+    managed_prefix = tmp_path / "managed-install"
+    managed_prefix.mkdir()
+
+    import os
+    os.environ["CODEX_INSTALL_PREFIX"] = str(managed_prefix)
+
+    code = cmd_resync_skills(None, script_root=source_dir)
+
+    assert code == 0
+    action_text = (managed_prefix / "action.txt").read_text(encoding="utf-8")
+    assert action_text == "install-skills"

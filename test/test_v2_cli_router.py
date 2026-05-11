@@ -4,6 +4,8 @@ import argparse
 from io import StringIO
 from pathlib import Path
 
+import pytest
+
 from cli.entrypoint import run_cli_entrypoint
 from cli.router import (
     dispatch_auxiliary_command,
@@ -45,6 +47,7 @@ def test_dispatch_management_command_parses_and_routes() -> None:
         version_handler=make_handler("version"),
         uninstall_handler=make_handler("uninstall"),
         reinstall_handler=make_handler("reinstall"),
+        resync_skills_handler=make_handler("resync-skills"),
     )
 
     assert result == 1
@@ -65,6 +68,7 @@ def test_dispatch_management_command_returns_none_for_non_management() -> None:
         version_handler=fail,
         uninstall_handler=fail,
         reinstall_handler=fail,
+        resync_skills_handler=fail,
     ) is None
 
 
@@ -224,3 +228,48 @@ def test_run_cli_entrypoint_rejects_removed_mail_command() -> None:
     assert result == 2
     assert stdout.getvalue() == ""
     assert "`ccb mail` has been removed" in stderr.getvalue()
+
+
+def test_dispatch_management_command_routes_resync_skills() -> None:
+    calls: list[tuple[str, argparse.Namespace]] = []
+
+    def make_handler(name: str):
+        def _handler(args: argparse.Namespace) -> int:
+            calls.append((name, args))
+            return 42
+        return _handler
+
+    result = dispatch_management_command(
+        ["resync-skills"],
+        update_handler=make_handler("update"),
+        version_handler=make_handler("version"),
+        uninstall_handler=make_handler("uninstall"),
+        reinstall_handler=make_handler("reinstall"),
+        resync_skills_handler=make_handler("resync-skills"),
+    )
+
+    assert result == 42
+    assert len(calls) == 1
+    name, args = calls[0]
+    assert name == "resync-skills"
+    assert args.command == "resync-skills"
+
+
+def test_resync_skills_help_does_not_trigger_start_help() -> None:
+    stdout = StringIO()
+    stderr = StringIO()
+
+    # argparse --help writes to sys.stdout and calls sys.exit(0).
+    # A SystemExit(0) proves it reached the management parser, not start help
+    # (start help would return 0 without SystemExit).
+    with pytest.raises(SystemExit) as exc_info:
+        run_cli_entrypoint(
+            ["resync-skills", "--help"],
+            version="5.2.8",
+            script_root=Path("/tmp/ccb"),
+            cwd=Path("/tmp/project"),
+            stdout=stdout,
+            stderr=stderr,
+        )
+
+    assert exc_info.value.code == 0

@@ -1,6 +1,6 @@
 ﻿param(
   [Parameter(Position = 0)]
-  [ValidateSet("install", "uninstall", "help")]
+  [ValidateSet("install", "uninstall", "install-skills", "help")]
   [string]$Command = "help",
   [string]$InstallPrefix = "$env:LOCALAPPDATA\codex-dual",
   [switch]$Yes
@@ -76,6 +76,7 @@ function Show-Usage {
   Write-Host "Usage:"
   Write-Host "  .\install.ps1 install    # Install or update"
   Write-Host "  .\install.ps1 uninstall  # Uninstall"
+  Write-Host "  .\install.ps1 install-skills  # Re-install skills only"
   Write-Host ""
   Write-Host "Options:"
   Write-Host "  -InstallPrefix <path>    # Custom install location (default: $env:LOCALAPPDATA\codex-dual)"
@@ -407,6 +408,69 @@ function Cleanup-LegacyFiles {
   }
 }
 
+function Install-ClaudeSkills {
+  $claudeDir = Join-Path $env:USERPROFILE ".claude"
+  $skillsDir = Join-Path $claudeDir "skills"
+  $srcSkills = Join-Path $repoRoot "claude_skills"
+
+  if (-not (Test-Path $srcSkills)) {
+    return
+  }
+
+  if (-not (Test-Path $claudeDir)) {
+    New-Item -ItemType Directory -Path $claudeDir -Force | Out-Null
+  }
+  if (-not (Test-Path $skillsDir)) {
+    New-Item -ItemType Directory -Path $skillsDir -Force | Out-Null
+  }
+
+  Write-Host "Installing Claude skills (PowerShell SKILL.md templates)..."
+  Get-ChildItem -Path $srcSkills -Directory | ForEach-Object {
+    if ($_.Name -eq "docs") { return }
+
+    $skillName = $_.Name
+    $srcDir = $_.FullName
+    $dstDir = Join-Path $skillsDir $skillName
+    $dstSkillMd = Join-Path $dstDir "SKILL.md"
+
+    # Remove and recreate to clean stale files
+    if (Test-Path $dstDir) {
+      Remove-Item -Recurse -Force $dstDir
+    }
+    New-Item -ItemType Directory -Path $dstDir -Force | Out-Null
+
+    $srcSkillMd = Join-Path $srcDir "SKILL.md.powershell"
+    if (-not (Test-Path $srcSkillMd)) {
+      $srcSkillMd = Join-Path $srcDir "SKILL.md"
+    }
+    if (-not (Test-Path $srcSkillMd)) {
+      return
+    }
+
+    Copy-Item -Force $srcSkillMd $dstSkillMd
+
+    # Copy additional subdirectories (e.g., references/) if they exist
+    Get-ChildItem -Path $srcDir -Directory | ForEach-Object {
+      $subDirName = $_.Name
+      $srcSubDir = $_.FullName
+      $dstSubDir = Join-Path $dstDir $subDirName
+      Copy-Item -Recurse -Force $srcSubDir $dstSubDir
+    }
+
+    Write-Host "  Updated skill: $skillName"
+  }
+
+  $srcDocs = Join-Path $srcSkills "docs"
+  if (Test-Path $srcDocs) {
+    $dstDocs = Join-Path $skillsDir "docs"
+    if (Test-Path $dstDocs) { Remove-Item -Recurse -Force $dstDocs }
+    Copy-Item -Recurse -Force $srcDocs $dstDocs
+    Write-Host "  Installed skills docs: docs/"
+  }
+
+  Write-Host "Updated Claude skills directory: $skillsDir"
+}
+
 function Install-CodexSkills {
   $skillsSrc = Join-Path $repoRoot "codex_skills"
   $codexHome = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $env:USERPROFILE ".codex" }
@@ -427,9 +491,11 @@ function Install-CodexSkills {
     $dstDir = Join-Path $skillsDst $skillName
     $dstSkillMd = Join-Path $dstDir "SKILL.md"
 
-    if (-not (Test-Path $dstDir)) {
-      New-Item -ItemType Directory -Path $dstDir -Force | Out-Null
+    # Remove and recreate to clean stale files
+    if (Test-Path $dstDir) {
+      Remove-Item -Recurse -Force $dstDir
     }
+    New-Item -ItemType Directory -Path $dstDir -Force | Out-Null
 
     $srcSkillMd = Join-Path $srcDir "SKILL.md.powershell"
     if (-not (Test-Path $srcSkillMd)) {
@@ -482,9 +548,11 @@ function Install-DroidSkills {
       return
     }
 
-    if (-not (Test-Path $dstDir)) {
-      New-Item -ItemType Directory -Path $dstDir -Force | Out-Null
+    # Remove and recreate to clean stale files
+    if (Test-Path $dstDir) {
+      Remove-Item -Recurse -Force $dstDir
     }
+    New-Item -ItemType Directory -Path $dstDir -Force | Out-Null
 
     Copy-Item -Force $srcSkillMd (Join-Path $dstDir "SKILL.md")
 
@@ -548,54 +616,7 @@ function Install-ClaudeConfig {
   }
 
   # Install skills
-  $skillsDir = Join-Path $claudeDir "skills"
-  $srcSkills = Join-Path $repoRoot "claude_skills"
-  if (Test-Path $srcSkills) {
-    if (-not (Test-Path $skillsDir)) {
-      New-Item -ItemType Directory -Path $skillsDir -Force | Out-Null
-    }
-    Write-Host "Installing Claude skills (PowerShell SKILL.md templates)..."
-    Get-ChildItem -Path $srcSkills -Directory | ForEach-Object {
-      if ($_.Name -eq "docs") { return }
-
-      $skillName = $_.Name
-      $srcDir = $_.FullName
-      $dstDir = Join-Path $skillsDir $skillName
-      $dstSkillMd = Join-Path $dstDir "SKILL.md"
-
-      if (-not (Test-Path $dstDir)) {
-        New-Item -ItemType Directory -Path $dstDir -Force | Out-Null
-      }
-
-      $srcSkillMd = Join-Path $srcDir "SKILL.md.powershell"
-      if (-not (Test-Path $srcSkillMd)) {
-        $srcSkillMd = Join-Path $srcDir "SKILL.md"
-      }
-      if (-not (Test-Path $srcSkillMd)) {
-        return
-      }
-
-      Copy-Item -Force $srcSkillMd $dstSkillMd
-
-      # Copy additional subdirectories (e.g., references/) if they exist
-      Get-ChildItem -Path $srcDir -Directory | ForEach-Object {
-        $subDirName = $_.Name
-        $srcSubDir = $_.FullName
-        $dstSubDir = Join-Path $dstDir $subDirName
-        Copy-Item -Recurse -Force $srcSubDir $dstSubDir
-      }
-
-      Write-Host "  Updated skill: $skillName"
-    }
-
-    $srcDocs = Join-Path $srcSkills "docs"
-    if (Test-Path $srcDocs) {
-      $dstDocs = Join-Path $skillsDir "docs"
-      if (Test-Path $dstDocs) { Remove-Item -Recurse -Force $dstDocs }
-      Copy-Item -Recurse -Force $srcDocs $dstDocs
-      Write-Host "  Installed skills docs: docs/"
-    }
-  }
+  Install-ClaudeSkills
 
   $claudeMdTemplate = Join-Path $installPrefix "config\claude-md-ccb.md"
   if (-not (Test-Path $claudeMdTemplate)) {
@@ -828,5 +849,12 @@ if ($Command -eq "install") {
 
 if ($Command -eq "uninstall") {
   Uninstall-Native
+  exit 0
+}
+
+if ($Command -eq "install-skills") {
+  Install-ClaudeSkills
+  Install-CodexSkills
+  Install-DroidSkills
   exit 0
 }

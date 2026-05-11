@@ -2537,6 +2537,11 @@ main() {
   require_non_root_execution
 
   case "$1" in
+    install-skills)
+      install_claude_skills
+      install_codex_skills
+      install_droid_skills
+      ;;
     install)
       install_all
       ;;

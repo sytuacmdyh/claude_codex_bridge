@@ -16,4 +16,8 @@ def cmd_reinstall(_args, *, script_root: Path) -> int:
     return run_installer("install", script_root=script_root)
 
 
-__all__ = ['cmd_reinstall', 'cmd_uninstall']
+def cmd_resync_skills(_args, *, script_root: Path) -> int:
+    return run_installer("install-skills", script_root=script_root)
+
+
+__all__ = ['cmd_reinstall', 'cmd_resync_skills', 'cmd_uninstall']
