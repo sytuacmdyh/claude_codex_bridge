@@ -19,6 +19,7 @@ _CLAUDE_AUTH_ENV_KEYS = ('ANTHROPIC_AUTH_TOKEN',)
 _CLAUDE_API_AUTH_ENV_KEYS = ('ANTHROPIC_API_KEY',)
 _CLAUDE_ROUTE_ENV_KEYS = ('ANTHROPIC_BASE_URL',)
 _CLAUDE_HOME_HOOK_ASSET_DIRS = ('.codeisland',)
+_EXTRA_CONFIG_DIRS = ('.lark-cli', '.local/share/lark-cli')
 _CLAUDE_JSON_AUTH_METADATA_KEYS = ('oauthAccount',)
 _CLAUDE_JSON_AUTH_SECRET_KEYS = ('primaryApiKey',)
 _CLAUDE_JSON_AUTH_COMPANION_KEYS = (
@@ -123,6 +124,7 @@ def _prepare_managed_home(source_home: Path, target_layout: ClaudeHomeLayout, *,
     _materialize_auth(source_home, target_layout, profile=profile)
     _materialize_trust(source_home, target_layout, profile=profile)
     _materialize_inherited_assets(source_home, target_layout, profile=profile)
+    _materialize_extra_config(source_home, target_layout, profile=profile)
 
 
 def _materialize_inherited_assets(source_home: Path, target_layout: ClaudeHomeLayout, *, profile) -> None:
@@ -144,6 +146,20 @@ def _materialize_home_hook_assets(source_home: Path, target_layout: ClaudeHomeLa
     for dirname in _CLAUDE_HOME_HOOK_ASSET_DIRS:
         if _payload_mentions_home_asset(hooks_payload, dirname):
             _sync_tree(source_home / dirname, target_layout.home_root / dirname)
+
+
+def _materialize_extra_config(source_home: Path, target_layout: ClaudeHomeLayout, *, profile) -> None:
+    enabled = _inherits_config(profile) and _inherits_auth(profile)
+    for dirname in _EXTRA_CONFIG_DIRS:
+        target = target_layout.home_root / dirname
+        if not enabled:
+            _remove_path(target)
+            continue
+        src = source_home / dirname
+        if src.is_dir():
+            _sync_tree(src, target)
+        else:
+            _remove_path(target)
 
 
 def _materialize_settings(source_home: Path, target_layout: ClaudeHomeLayout, *, profile) -> None:
@@ -465,6 +481,24 @@ def _remove_file(path: Path) -> None:
         pass
     except Exception:
         pass
+
+
+def _remove_path(path: Path) -> None:
+    if path.is_symlink() or path.is_file():
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        except Exception:
+            pass
+        return
+    if path.is_dir():
+        try:
+            shutil.rmtree(path)
+        except FileNotFoundError:
+            pass
+        except Exception:
+            pass
 
 
 def _source_auth_paths(source_home: Path, target_layout: ClaudeHomeLayout) -> tuple[tuple[Path, Path], ...]:

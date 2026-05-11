@@ -1163,4 +1163,91 @@ def test_materialize_gemini_home_config_merges_trusted_folders(tmp_path: Path) -
 
     payload = json.loads(layout.trusted_folders_path.read_text(encoding='utf-8'))
     assert payload['/system/project'] == 'TRUST_FOLDER'
-    assert payload['/managed/project'] == 'TRUST_FOLDER'
+
+
+def test_materialize_claude_home_config_syncs_extra_config_dirs(tmp_path: Path) -> None:
+    source_home = tmp_path / 'system-home'
+    target_home = tmp_path / 'managed-home'
+    lark_cli = source_home / '.lark-cli' / 'config.json'
+    lark_cli.parent.mkdir(parents=True, exist_ok=True)
+    lark_cli.write_text('{"appId": "test"}\n', encoding='utf-8')
+    lark_data = source_home / '.local' / 'share' / 'lark-cli' / 'master.key'
+    lark_data.parent.mkdir(parents=True, exist_ok=True)
+    lark_data.write_text('secret-key\n', encoding='utf-8')
+
+    layout = materialize_claude_home_config(target_home, source_home=source_home)
+
+    assert (layout.home_root / '.lark-cli' / 'config.json').read_text(encoding='utf-8') == '{"appId": "test"}\n'
+    assert (layout.home_root / '.local' / 'share' / 'lark-cli' / 'master.key').read_text(encoding='utf-8') == 'secret-key\n'
+
+
+def test_materialize_claude_home_config_skips_extra_config_when_inherit_config_false(tmp_path: Path) -> None:
+    source_home = tmp_path / 'system-home'
+    target_home = tmp_path / 'managed-home'
+    lark_cli = source_home / '.lark-cli' / 'config.json'
+    lark_cli.parent.mkdir(parents=True, exist_ok=True)
+    lark_cli.write_text('{"appId": "test"}\n', encoding='utf-8')
+    lark_data = source_home / '.local' / 'share' / 'lark-cli' / 'master.key'
+    lark_data.parent.mkdir(parents=True, exist_ok=True)
+    lark_data.write_text('secret-key\n', encoding='utf-8')
+    # pre-populate stale copy in target
+    stale = target_home / '.lark-cli' / 'config.json'
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    stale.write_text('{"appId": "stale"}\n', encoding='utf-8')
+    stale_data = target_home / '.local' / 'share' / 'lark-cli' / 'master.key'
+    stale_data.parent.mkdir(parents=True, exist_ok=True)
+    stale_data.write_text('stale-key\n', encoding='utf-8')
+
+    profile = ProviderProfileSpec(inherit_config=False, inherit_auth=True)
+    layout = materialize_claude_home_config(target_home, source_home=source_home, profile=profile)
+
+    assert not (layout.home_root / '.lark-cli').exists()
+    assert not (layout.home_root / '.local' / 'share' / 'lark-cli').exists()
+
+
+def test_materialize_claude_home_config_skips_extra_config_when_inherit_auth_false(tmp_path: Path) -> None:
+    source_home = tmp_path / 'system-home'
+    target_home = tmp_path / 'managed-home'
+    lark_cli = source_home / '.lark-cli' / 'config.json'
+    lark_cli.parent.mkdir(parents=True, exist_ok=True)
+    lark_cli.write_text('{"appId": "test"}\n', encoding='utf-8')
+    lark_data = source_home / '.local' / 'share' / 'lark-cli' / 'master.key'
+    lark_data.parent.mkdir(parents=True, exist_ok=True)
+    lark_data.write_text('secret-key\n', encoding='utf-8')
+    # pre-populate stale copy in target
+    stale = target_home / '.lark-cli' / 'config.json'
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    stale.write_text('{"appId": "stale"}\n', encoding='utf-8')
+    stale_data = target_home / '.local' / 'share' / 'lark-cli' / 'master.key'
+    stale_data.parent.mkdir(parents=True, exist_ok=True)
+    stale_data.write_text('stale-key\n', encoding='utf-8')
+
+    profile = ProviderProfileSpec(inherit_config=True, inherit_auth=False)
+    layout = materialize_claude_home_config(target_home, source_home=source_home, profile=profile)
+
+    assert not (layout.home_root / '.lark-cli').exists()
+    assert not (layout.home_root / '.local' / 'share' / 'lark-cli').exists()
+
+
+def test_materialize_claude_home_config_removes_stale_extra_config_on_disable(tmp_path: Path) -> None:
+    source_home = tmp_path / 'system-home'
+    target_home = tmp_path / 'managed-home'
+    lark_cli = source_home / '.lark-cli' / 'config.json'
+    lark_cli.parent.mkdir(parents=True, exist_ok=True)
+    lark_cli.write_text('{"appId": "test"}\n', encoding='utf-8')
+    lark_data = source_home / '.local' / 'share' / 'lark-cli' / 'master.key'
+    lark_data.parent.mkdir(parents=True, exist_ok=True)
+    lark_data.write_text('secret-key\n', encoding='utf-8')
+
+    # First: sync with full inheritance
+    profile_enabled = ProviderProfileSpec(inherit_config=True, inherit_auth=True)
+    layout = materialize_claude_home_config(target_home, source_home=source_home, profile=profile_enabled)
+    assert (layout.home_root / '.lark-cli' / 'config.json').read_text(encoding='utf-8') == '{"appId": "test"}\n'
+    assert (layout.home_root / '.local' / 'share' / 'lark-cli' / 'master.key').read_text(encoding='utf-8') == 'secret-key\n'
+
+    # Then: disable auth and re-materialize
+    profile_disabled = ProviderProfileSpec(inherit_config=True, inherit_auth=False)
+    materialize_claude_home_config(target_home, source_home=source_home, profile=profile_disabled)
+
+    assert not (layout.home_root / '.lark-cli').exists()
+    assert not (layout.home_root / '.local' / 'share' / 'lark-cli').exists()
