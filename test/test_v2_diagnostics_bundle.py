@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import tarfile
 
 from cli.context import CliContextBuilder
 from cli.models import ParsedDoctorCommand
+import cli.services.diagnostics_runtime.bundle as bundle_runtime
 from cli.services.diagnostics import export_diagnostic_bundle
 from project.ids import compute_project_id
 
@@ -170,10 +172,15 @@ def test_export_diagnostic_bundle_includes_provider_state_and_excludes_auth(tmp_
     isolated_home.mkdir(parents=True, exist_ok=True)
     (isolated_home / 'config.toml').write_text('[model]\nname="gpt-5"\n', encoding='utf-8')
     (isolated_home / 'auth.json').write_text('{"OPENAI_API_KEY":"secret"}\n', encoding='utf-8')
+    plugin_manifest = isolated_home / '.tmp' / 'plugins' / '.agents' / 'plugins' / 'marketplace.json'
+    plugin_manifest.parent.mkdir(parents=True, exist_ok=True)
+    plugin_manifest.write_text('{"name":"market"}\n', encoding='utf-8')
+    (isolated_home / '.tmp' / 'plugins.sha').write_text('plugin-sha\n', encoding='utf-8')
 
     summary = export_diagnostic_bundle(context, ParsedDoctorCommand(project=None, bundle=True))
     bundle_path = Path(summary.bundle_path)
     manifest = _read_tar_json(bundle_path, f'{summary.bundle_id}/manifest.json')
+    storage_summary = _read_tar_json(bundle_path, f'{summary.bundle_id}/generated/storage-summary.json')
     members = _archive_members(bundle_path)
 
     assert any(
@@ -190,7 +197,91 @@ def test_export_diagnostic_bundle_includes_provider_state_and_excludes_auth(tmp_
         entry['archive_path'] != 'project/.ccb/agents/demo/provider-state/codex/home/auth.json'
         for entry in manifest['entries']
     )
+    assert all(
+        entry['archive_path'] != 'project/.ccb/agents/demo/provider-state/codex/home/.tmp/plugins/.agents/plugins/marketplace.json'
+        for entry in manifest['entries']
+    )
+    assert any(
+        entry['relative_path'] == 'agents/demo/provider-state/codex/home/.tmp/plugins/.agents/plugins/marketplace.json'
+        and entry['storage_class'] == 'startup_authority_bundle'
+        for entry in storage_summary['entries']
+    )
+    assert f'{summary.bundle_id}/generated/storage-summary.json' in members
     assert f'{summary.bundle_id}/project/.ccb/agents/demo/provider-state/codex/home/auth.json' not in members
+    assert (
+        f'{summary.bundle_id}/project/.ccb/agents/demo/provider-state/codex/home/.tmp/plugins/.agents/plugins/marketplace.json'
+        not in members
+    )
+
+
+def test_export_diagnostic_bundle_hard_excludes_provider_cache_when_storage_summary_fails(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project_root = tmp_path / 'repo-bundle-provider-state-storage-error'
+    (project_root / '.ccb').mkdir(parents=True, exist_ok=True)
+    (project_root / '.ccb' / 'ccb.config').write_text('codexer:codex\nclauder:claude\ngem:gemini\n', encoding='utf-8')
+    context = CliContextBuilder().build(
+        ParsedDoctorCommand(project=None, bundle=True),
+        cwd=project_root,
+        bootstrap_if_missing=False,
+    )
+
+    codex_home = context.paths.agent_provider_state_dir('codexer', 'codex') / 'home'
+    codex_home.mkdir(parents=True, exist_ok=True)
+    (codex_home / 'config.toml').write_text('model = "gpt-5"\n', encoding='utf-8')
+    plugin_manifest = codex_home / '.tmp' / 'plugins' / '.agents' / 'plugins' / 'marketplace.json'
+    plugin_manifest.parent.mkdir(parents=True, exist_ok=True)
+    plugin_manifest.write_text('{"name":"market"}\n', encoding='utf-8')
+    (codex_home / '.tmp' / 'plugins.sha').write_text('plugin-sha\n', encoding='utf-8')
+    outside = tmp_path / 'outside-provider-state'
+    outside.mkdir(parents=True, exist_ok=True)
+    (outside / 'leaked.json').write_text('{"secret":"outside"}\n', encoding='utf-8')
+    try:
+        os.symlink(outside, codex_home / 'linked-outside')
+    except OSError:
+        pass
+
+    claude_home = context.paths.agent_provider_state_dir('clauder', 'claude') / 'home'
+    claude_version_manifest = claude_home / '.local' / 'share' / 'claude' / 'versions' / '2.1.137' / 'metadata.json'
+    claude_version_manifest.parent.mkdir(parents=True, exist_ok=True)
+    claude_version_manifest.write_text('{"version":"2.1.137"}\n', encoding='utf-8')
+
+    gemini_home = context.paths.agent_provider_state_dir('gem', 'gemini') / 'home'
+    gemini_cache = gemini_home / '.npm' / '_cacache' / 'index.json'
+    gemini_cache.parent.mkdir(parents=True, exist_ok=True)
+    gemini_cache.write_text('{"cache":true}\n', encoding='utf-8')
+    gemini_node_gyp = gemini_home / '.cache' / 'node-gyp' / 'config.json'
+    gemini_node_gyp.parent.mkdir(parents=True, exist_ok=True)
+    gemini_node_gyp.write_text('{"cache":true}\n', encoding='utf-8')
+
+    def fail_storage_summary(_context):
+        raise RuntimeError('storage failed')
+
+    monkeypatch.setattr(bundle_runtime, 'summarize_storage', fail_storage_summary)
+
+    summary = export_diagnostic_bundle(context, ParsedDoctorCommand(project=None, bundle=True))
+    bundle_path = Path(summary.bundle_path)
+    manifest = _read_tar_json(bundle_path, f'{summary.bundle_id}/manifest.json')
+    storage_summary = _read_tar_json(bundle_path, f'{summary.bundle_id}/generated/storage-summary.json')
+    members = _archive_members(bundle_path)
+
+    assert storage_summary['error'] == 'storage failed'
+    assert any(
+        entry['archive_path'] == 'project/.ccb/agents/codexer/provider-state/codex/home/config.toml'
+        and entry['status'] == 'included'
+        for entry in manifest['entries']
+    )
+    assert all('/.tmp/plugins/' not in entry['archive_path'] for entry in manifest['entries'])
+    assert all('/.local/share/claude/versions/' not in entry['archive_path'] for entry in manifest['entries'])
+    assert all('/.npm/_cacache/' not in entry['archive_path'] for entry in manifest['entries'])
+    assert all('/.cache/node-gyp/' not in entry['archive_path'] for entry in manifest['entries'])
+    assert all('linked-outside' not in entry['archive_path'] for entry in manifest['entries'])
+    assert all('/.tmp/plugins/' not in member for member in members)
+    assert all('/.local/share/claude/versions/' not in member for member in members)
+    assert all('/.npm/_cacache/' not in member for member in members)
+    assert all('/.cache/node-gyp/' not in member for member in members)
+    assert all('linked-outside' not in member for member in members)
 
 
 def test_export_diagnostic_bundle_excludes_gemini_auth_artifacts(tmp_path: Path) -> None:

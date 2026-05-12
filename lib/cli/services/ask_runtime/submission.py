@@ -4,7 +4,7 @@ from collections.abc import Callable, Collection
 
 from agents.models import AgentValidationError
 from ccbd.api_models import DeliveryScope, MessageEnvelope
-from mailbox_runtime.targets import CMD_ACTOR, NON_AGENT_ACTORS, normalize_actor_name
+from mailbox_runtime.targets import NON_AGENT_ACTORS, normalize_actor_name
 
 from .models import AskSummary
 
@@ -22,7 +22,7 @@ def submit_ask(
     _validate_target(normalized_target, config.agents)
     sender = resolve_ask_sender_fn(context, command.sender)
     normalized_sender = _normalize_sender(sender)
-    _validate_sender(normalized_sender, config.agents, cmd_enabled=bool(getattr(config, 'cmd_enabled', False)))
+    _validate_sender(normalized_sender, config.agents)
     payload = invoke_mounted_daemon_fn(
         context,
         allow_restart_stale=True,
@@ -62,9 +62,9 @@ def _validate_target(target: str, configured_agents: Collection[str]) -> None:
         raise ValueError(f'unknown agent: {target}')
 
 
-def _validate_sender(sender: str, configured_agents: Collection[str], *, cmd_enabled: bool) -> None:
+def _validate_sender(sender: str, configured_agents: Collection[str]) -> None:
     if sender in NON_AGENT_ACTORS:
-        if sender == CMD_ACTOR and not cmd_enabled:
+        if sender == 'cmd':
             raise ValueError(f'unknown sender agent: {sender}')
         return
     if sender in configured_agents:

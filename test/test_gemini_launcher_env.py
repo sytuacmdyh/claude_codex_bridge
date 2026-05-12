@@ -59,13 +59,23 @@ def _spec(name: str = 'agent1') -> AgentSpec:
     )
 
 
+def _prepared(runtime_dir) -> dict[str, object]:
+    return {'project_root': runtime_dir}
+
+
 def test_gemini_launcher_build_start_cmd_exports_managed_home(tmp_path) -> None:
     runtime_dir = tmp_path / 'runtime'
     runtime_dir.mkdir(parents=True, exist_ok=True)
     spec = _spec()
     command = ParsedStartCommand(project=None, agent_names=('agent1',), restore=False, auto_permission=False)
 
-    start_cmd = gemini_launcher.build_start_cmd(command, spec, runtime_dir, 'gemini-sess-home')
+    start_cmd = gemini_launcher.build_start_cmd(
+        command,
+        spec,
+        runtime_dir,
+        'gemini-sess-home',
+        prepared_state=_prepared(runtime_dir),
+    )
 
     expected_home = runtime_dir / 'gemini-home'
     expected_root = expected_home / '.gemini' / 'tmp'
@@ -80,7 +90,13 @@ def test_gemini_launcher_build_start_cmd_uses_agent_provider_state_home_for_mana
     spec = _spec()
     command = ParsedStartCommand(project=None, agent_names=('agent1',), restore=False, auto_permission=False)
 
-    start_cmd = gemini_launcher.build_start_cmd(command, spec, runtime_dir, 'gemini-sess-home')
+    start_cmd = gemini_launcher.build_start_cmd(
+        command,
+        spec,
+        runtime_dir,
+        'gemini-sess-home',
+        prepared_state=_prepared(runtime_dir),
+    )
 
     expected_home = tmp_path / '.ccb' / 'agents' / 'agent1' / 'provider-state' / 'gemini' / 'home'
     expected_root = expected_home / '.gemini' / 'tmp'

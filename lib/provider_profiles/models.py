@@ -18,6 +18,7 @@ class ProviderProfileSpec:
     inherit_config: bool = True
     inherit_skills: bool = True
     inherit_commands: bool = True
+    inherit_memory: bool = True
 
     def __post_init__(self) -> None:
         mode = str(self.mode or "inherit").strip().lower() or "inherit"
@@ -38,6 +39,7 @@ class ProviderProfileSpec:
             'inherit_config': bool(self.inherit_config),
             'inherit_skills': bool(self.inherit_skills),
             'inherit_commands': bool(self.inherit_commands),
+            'inherit_memory': bool(self.inherit_memory),
         }
 
 
@@ -54,6 +56,7 @@ class ResolvedProviderProfile:
     inherit_config: bool = True
     inherit_skills: bool = True
     inherit_commands: bool = True
+    inherit_memory: bool = True
 
     def __post_init__(self) -> None:
         provider = str(self.provider or '').strip().lower()
@@ -97,6 +100,7 @@ class ResolvedProviderProfile:
             'inherit_config': bool(self.inherit_config),
             'inherit_skills': bool(self.inherit_skills),
             'inherit_commands': bool(self.inherit_commands),
+            'inherit_memory': bool(self.inherit_memory),
         }
 
     @classmethod
@@ -113,6 +117,7 @@ class ResolvedProviderProfile:
             inherit_config=bool(record.get('inherit_config', True)),
             inherit_skills=bool(record.get('inherit_skills', True)),
             inherit_commands=bool(record.get('inherit_commands', True)),
+            inherit_memory=bool(record.get('inherit_memory', True)),
         )
 
 

@@ -21,9 +21,18 @@ from .model_enums import InboundEventStatus, InboundEventType, LeaseState, Mailb
 class MailboxRecord:
     mailbox_id: str
     agent_name: str
+    summary_version: int
+    summary_source: str
+    summary_refreshed_at: str
     active_inbound_event_id: str | None
     queue_depth: int
     pending_reply_count: int
+    head_inbound_event_id: str | None
+    head_event_type: str | None
+    head_status: str | None
+    head_message_id: str | None
+    head_attempt_id: str | None
+    head_payload_ref: str | None
     last_inbound_started_at: str | None
     last_inbound_finished_at: str | None
     mailbox_state: MailboxState

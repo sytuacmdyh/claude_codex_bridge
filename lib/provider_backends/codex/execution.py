@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 from ccbd.api_models import JobRecord
@@ -39,6 +40,7 @@ class CodexProviderAdapter:
         )
 
     def poll(self, submission: ProviderSubmission, *, now: str) -> ProviderPollResult | None:
+        submission = _refresh_reader_for_current_session_binding(submission)
         return _poll_submission(submission, now=now)
 
     def export_runtime_state(self, submission: ProviderSubmission) -> dict[str, object]:
@@ -58,6 +60,7 @@ class CodexProviderAdapter:
             'last_assistant_message': submission.runtime_state.get('last_assistant_message'),
             'last_assistant_signature': submission.runtime_state.get('last_assistant_signature'),
             'session_path': submission.runtime_state.get('session_path'),
+            'workspace_path': submission.runtime_state.get('workspace_path'),
         }
 
     def resume(
@@ -104,6 +107,80 @@ def _reader_factory(session, preferred_log: Path | None):
     if session_root is not None:
         kwargs["root"] = session_root
     return CodexLogReader(**kwargs)
+
+
+def _refresh_reader_for_current_session_binding(submission: ProviderSubmission) -> ProviderSubmission:
+    state = dict(submission.runtime_state)
+    if str(state.get('mode') or '').strip().lower() != 'active':
+        return submission
+    work_dir = _submission_work_dir(submission, state)
+    if work_dir is None:
+        return submission
+    session = _load_session(work_dir, submission.agent_name)
+    if session is None:
+        return submission
+    current_log = _current_session_log(session)
+    if current_log is None or not current_log.exists():
+        return submission
+
+    current_log_str = _normalized_path_string(current_log)
+    poll_state = dict(state.get('state') or {})
+    poll_state_log_str = _normalized_path_string(poll_state.get('log_path'))
+    reader = state.get('reader')
+    reader_log_str = _normalized_path_string(getattr(reader, '_preferred_log', None))
+    reader_filter = str(getattr(reader, '_session_id_filter', '') or '').strip()
+    current_filter = str(getattr(session, 'codex_session_id', '') or '').strip()
+
+    if (
+        current_log_str == poll_state_log_str
+        and current_log_str == reader_log_str
+        and (not current_filter or current_filter == reader_filter)
+    ):
+        return submission
+
+    updated_state = {
+        **state,
+        'reader': _reader_factory(session, current_log),
+        'workspace_path': str(work_dir),
+    }
+    if current_log_str != poll_state_log_str:
+        updated_state['state'] = {
+            **poll_state,
+            'log_path': current_log,
+            'offset': 0,
+            'last_rescan': 0.0,
+        }
+    return replace(submission, runtime_state=updated_state)
+
+
+def _submission_work_dir(submission: ProviderSubmission, state: dict[str, object]) -> Path | None:
+    diagnostics = submission.diagnostics if isinstance(submission.diagnostics, dict) else {}
+    raw = state.get('workspace_path') or diagnostics.get('workspace_path')
+    if not raw:
+        return None
+    try:
+        return Path(str(raw)).expanduser()
+    except Exception:
+        return None
+
+
+def _current_session_log(session) -> Path | None:
+    raw = str(getattr(session, 'codex_session_path', '') or '').strip()
+    if not raw:
+        return None
+    try:
+        return Path(raw).expanduser()
+    except Exception:
+        return None
+
+
+def _normalized_path_string(value: object) -> str:
+    if value is None:
+        return ''
+    try:
+        return str(Path(value).expanduser())
+    except Exception:
+        return str(value or '').strip()
 
 
 def _load_session(work_dir: Path, agent_name: str):

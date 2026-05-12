@@ -730,12 +730,12 @@ running / partially_replied
 
 - `ask <agent>`
 - `ccb ask <agent>`
-- `ccb watch <agent|job_id>`
 - `ccb pend <agent|job_id>`
+- `ccb pend --watch <agent|job_id>`
 - `ccb wait <job_id|message_id>`（新增）
 - `ccb queue <agent|all>`（新增）
-- `ccb retry <job_id|attempt_id>`（新增）
-- `ccb resubmit <message_id>`（新增）
+- `ccb repair retry <job_id|attempt_id>`（新增）
+- `ccb repair resubmit <message_id>`（新增）
 
 ### 16.2 MCP
 

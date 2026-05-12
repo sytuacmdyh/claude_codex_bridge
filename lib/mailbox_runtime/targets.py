@@ -20,17 +20,14 @@ def normalize_actor_name(actor: str | None) -> str:
 
 def normalize_mailbox_owner_name(actor: str | None) -> str:
     normalized = normalize_actor_name(actor)
-    if normalized in NON_MAILBOX_ACTORS:
+    if normalized in NON_AGENT_ACTORS:
         raise AgentValidationError(f'actor {normalized!r} does not own a mailbox')
     return normalized
 
 
 def known_mailbox_targets(config) -> frozenset[str]:
     agents = getattr(config, 'agents', {}) or {}
-    names = {normalize_agent_name(name) for name in agents}
-    if bool(getattr(config, 'cmd_enabled', False)):
-        names.add(CMD_ACTOR)
-    return frozenset(names)
+    return frozenset(normalize_agent_name(name) for name in agents)
 
 
 def normalize_mailbox_target(actor: str | None, *, known_targets: frozenset[str]) -> str | None:
@@ -47,7 +44,6 @@ def normalize_mailbox_target(actor: str | None, *, known_targets: frozenset[str]
 
 
 __all__ = [
-    'CMD_ACTOR',
     'NON_AGENT_ACTORS',
     'NON_MAILBOX_ACTORS',
     'USER_ACTOR',

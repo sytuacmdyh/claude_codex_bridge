@@ -5,6 +5,7 @@ import argparse
 from cli.models import (
     ParsedAckCommand,
     ParsedCancelCommand,
+    ParsedCleanupCommand,
     ParsedConfigValidateCommand,
     ParsedDoctorCommand,
     ParsedInboxCommand,
@@ -38,6 +39,11 @@ def parse_kill(tokens: list[str], *, project: str | None, error_type) -> ParsedK
     return ParsedKillCommand(project=project, force=bool(namespace.force))
 
 
+def parse_cleanup(tokens: list[str], *, project: str | None, error_type) -> ParsedCleanupCommand:
+    require_no_extra(tokens, command='cleanup', error_type=error_type)
+    return ParsedCleanupCommand(project=project)
+
+
 def parse_ps(tokens: list[str], *, project: str | None, error_type) -> ParsedPsCommand:
     require_no_extra(tokens, command='ps', error_type=error_type)
     return ParsedPsCommand(project=project)
@@ -56,23 +62,51 @@ def parse_watch(tokens: list[str], *, project: str | None, error_type) -> Parsed
 
 
 def parse_pend(tokens: list[str], *, project: str | None, error_type) -> ParsedPendCommand:
-    if not tokens or len(tokens) > 2:
-        raise error_type('pend requires <agent_name|job_id> [N]')
+    parser = argparse.ArgumentParser(prog='ccb pend', add_help=False)
+    parser.add_argument('--watch', action='store_true')
+    parser.add_argument('--inbox', action='store_true')
+    parser.add_argument('--queue', action='store_true')
+    parser.add_argument('--detail', action='store_true')
+    parser.add_argument('target')
+    parser.add_argument('count', nargs='?')
+    namespace = parse_args(parser, tokens, error_message='invalid pend command', error_type=error_type)
+    selected_modes = [name for name in ('watch', 'inbox', 'queue') if bool(getattr(namespace, name))]
+    if len(selected_modes) > 1:
+        raise error_type('pend supports at most one observer mode: --watch, --inbox, or --queue')
+    observer_mode = 'snapshot'
+    if namespace.watch:
+        observer_mode = 'watch'
+    elif namespace.inbox:
+        observer_mode = 'inbox'
+    elif namespace.queue:
+        observer_mode = 'queue'
+    if namespace.detail and observer_mode not in {'inbox', 'queue'}:
+        raise error_type('pend --detail requires --inbox or --queue')
     count: int | None = None
-    if len(tokens) == 2:
+    if namespace.count is not None:
         try:
-            count = int(tokens[1])
+            count = int(namespace.count)
         except ValueError as exc:
             raise error_type('pend count must be an integer') from exc
         if count <= 0:
             raise error_type('pend count must be positive')
-    return ParsedPendCommand(project=project, target=tokens[0], count=count)
+    if count is not None and observer_mode != 'snapshot':
+        raise error_type('pend count is only supported for snapshot mode')
+    return ParsedPendCommand(
+        project=project,
+        target=str(namespace.target),
+        count=count,
+        observer_mode=observer_mode,
+        detail=bool(namespace.detail),
+    )
 
 
 def parse_queue(tokens: list[str], *, project: str | None, error_type) -> ParsedQueueCommand:
-    if len(tokens) != 1:
-        raise error_type('queue requires <agent_name|all>')
-    return ParsedQueueCommand(project=project, target=tokens[0])
+    parser = argparse.ArgumentParser(prog='ccb queue', add_help=False)
+    parser.add_argument('--detail', action='store_true')
+    parser.add_argument('target')
+    namespace = parse_args(parser, tokens, error_message='invalid queue command', error_type=error_type)
+    return ParsedQueueCommand(project=project, target=str(namespace.target), detail=bool(namespace.detail))
 
 
 def parse_trace(tokens: list[str], *, project: str | None, error_type) -> ParsedTraceCommand:
@@ -85,6 +119,20 @@ def parse_resubmit(tokens: list[str], *, project: str | None, error_type) -> Par
     if len(tokens) != 1:
         raise error_type('resubmit requires <message_id>')
     return ParsedResubmitCommand(project=project, message_id=tokens[0])
+
+
+def parse_repair(tokens: list[str], *, project: str | None, error_type):
+    if not tokens:
+        raise error_type('repair requires one of: ack, retry, resubmit')
+    mode = tokens[0]
+    rest = tokens[1:]
+    if mode == 'ack':
+        return parse_ack(rest, project=project, error_type=error_type)
+    if mode == 'retry':
+        return parse_retry(rest, project=project, error_type=error_type)
+    if mode == 'resubmit':
+        return parse_resubmit(rest, project=project, error_type=error_type)
+    raise error_type('repair only supports: ack, retry, resubmit')
 
 
 def parse_retry(tokens: list[str], *, project: str | None, error_type) -> ParsedRetryCommand:
@@ -118,9 +166,11 @@ def parse_wait(command_name: str, tokens: list[str], *, project: str | None, err
 
 
 def parse_inbox(tokens: list[str], *, project: str | None, error_type) -> ParsedInboxCommand:
-    if len(tokens) != 1:
-        raise error_type('inbox requires <agent_name>')
-    return ParsedInboxCommand(project=project, agent_name=tokens[0])
+    parser = argparse.ArgumentParser(prog='ccb inbox', add_help=False)
+    parser.add_argument('--detail', action='store_true')
+    parser.add_argument('agent_name')
+    namespace = parse_args(parser, tokens, error_message='invalid inbox command', error_type=error_type)
+    return ParsedInboxCommand(project=project, agent_name=str(namespace.agent_name), detail=bool(namespace.detail))
 
 
 def parse_ack(tokens: list[str], *, project: str | None, error_type) -> ParsedAckCommand:
@@ -137,6 +187,15 @@ def parse_logs(tokens: list[str], *, project: str | None, error_type) -> ParsedL
 
 
 def parse_doctor(tokens: list[str], *, project: str | None, error_type) -> ParsedDoctorCommand:
+    if tokens[:1] in (['ps'], ['--runtime']):
+        return parse_ps(tokens[1:], project=project, error_type=error_type)
+    if tokens[:1] in (['logs'], ['--logs']):
+        return parse_logs(tokens[1:], project=project, error_type=error_type)
+    if tokens[:1] == ['storage']:
+        parser = argparse.ArgumentParser(prog='ccb doctor storage', add_help=False)
+        parser.add_argument('--json', dest='json_output', action='store_true')
+        namespace = parse_args(parser, tokens[1:], error_message='invalid doctor storage command', error_type=error_type)
+        return ParsedDoctorCommand(project=project, storage=True, json_output=bool(namespace.json_output))
     parser = argparse.ArgumentParser(prog='ccb doctor', add_help=False)
     parser.add_argument('--output', dest='output_path', nargs='?', const='', default=None)
     try:
@@ -159,6 +218,7 @@ def parse_config(tokens: list[str], *, project: str | None, error_type) -> Parse
 __all__ = [
     'parse_ack',
     'parse_cancel',
+    'parse_cleanup',
     'parse_config',
     'parse_doctor',
     'parse_inbox',
@@ -168,6 +228,7 @@ __all__ = [
     'parse_ping',
     'parse_ps',
     'parse_queue',
+    'parse_repair',
     'parse_resubmit',
     'parse_retry',
     'parse_trace',

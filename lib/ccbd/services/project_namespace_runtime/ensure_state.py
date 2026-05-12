@@ -59,7 +59,7 @@ def recreate_for_layout_change(controller, context):
     )
 
 
-def persist_refreshed_namespace(controller, context) -> ProjectNamespace:
+def persist_refreshed_namespace(controller, context, *, timeout_s: float | None = None) -> ProjectNamespace:
     current = context.current
     if current is None:
         raise ValueError('persist_refreshed_namespace requires current state')
@@ -69,15 +69,18 @@ def persist_refreshed_namespace(controller, context) -> ProjectNamespace:
         context.backend,
         session_name=context.desired_session_name,
         window_name=control_window_name,
+        timeout_s=timeout_s,
     )
     workspace_window = find_window(
         context.backend,
         session_name=context.desired_session_name,
         window_name=workspace_window_name,
+        timeout_s=timeout_s,
     )
     root_pane = window_root_pane(
         context.backend,
         target_window=session_window_target(context.desired_session_name, workspace_window_name),
+        timeout_s=timeout_s,
     )
     apply_namespace_identity(
         controller,
@@ -107,7 +110,7 @@ def persist_refreshed_namespace(controller, context) -> ProjectNamespace:
     return namespace_from_state(state)
 
 
-def build_created_namespace(controller, context) -> ProjectNamespace:
+def build_created_namespace(controller, context, *, timeout_s: float | None = None) -> ProjectNamespace:
     current = context.current
     occurred_at = controller._clock()
     epoch = next_namespace_epoch(current)
@@ -115,11 +118,13 @@ def build_created_namespace(controller, context) -> ProjectNamespace:
         context.backend,
         session_name=context.desired_session_name,
         window_name=context.desired_control_window_name,
+        timeout_s=timeout_s,
     )
     workspace_window = find_window(
         context.backend,
         session_name=context.desired_session_name,
         window_name=context.desired_workspace_window_name,
+        timeout_s=timeout_s,
     )
     state = build_active_state(
         project_id=controller._project_id,

@@ -67,3 +67,48 @@ class JsonlStore:
                     raise ValueError(f'{path}: expected JSON object rows')
                 rows.append(loader(payload) if loader else payload)
         return current, rows
+
+    def find_last(
+        self,
+        path: Path,
+        predicate: Callable[[dict[str, Any]], bool],
+        loader: Callable[[dict[str, Any]], T] | None = None,
+    ) -> T | dict[str, Any] | None:
+        target = Path(path)
+        if not target.exists():
+            return None
+        with target.open('rb') as handle:
+            handle.seek(0, 2)
+            position = handle.tell()
+            buffer = b''
+            while position > 0:
+                read_size = min(4096, position)
+                position -= read_size
+                handle.seek(position)
+                chunk = handle.read(read_size)
+                buffer = chunk + buffer
+                lines = buffer.splitlines()
+                if position > 0 and buffer and not buffer.startswith((b'\n', b'\r')):
+                    buffer = lines[0] if lines else buffer
+                    lines = lines[1:]
+                else:
+                    buffer = b''
+                for raw in reversed(lines):
+                    text = raw.decode('utf-8').strip()
+                    if not text:
+                        continue
+                    payload = json.loads(text)
+                    if not isinstance(payload, dict):
+                        raise ValueError(f'{path}: expected JSON object rows')
+                    if not predicate(payload):
+                        continue
+                    return loader(payload) if loader else payload
+            if buffer:
+                text = buffer.decode('utf-8').strip()
+                if text:
+                    payload = json.loads(text)
+                    if not isinstance(payload, dict):
+                        raise ValueError(f'{path}: expected JSON object rows')
+                    if predicate(payload):
+                        return loader(payload) if loader else payload
+        return None

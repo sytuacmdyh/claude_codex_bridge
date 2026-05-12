@@ -39,6 +39,8 @@ EXCLUDES = {
     ".pytest_cache",
     ".mypy_cache",
     ".venv",
+    # Maintainer-only utilities are versioned in git but must not ship in release tarballs.
+    "dev_tools",
     "dist",
 }
 _HOST_SYSTEMS = {

@@ -19,10 +19,11 @@ class MessageStore:
         return self._store.read_all(self._layout.ccbd_messages_path, loader=MessageRecord.from_record)
 
     def get_latest(self, message_id: str) -> MessageRecord | None:
-        for record in reversed(self.list_all()):
-            if record.message_id == message_id:
-                return record
-        return None
+        return self._store.find_last(
+            self._layout.ccbd_messages_path,
+            predicate=lambda payload: str(payload.get('message_id') or '') == message_id,
+            loader=MessageRecord.from_record,
+        )
 
     def list_submission(self, submission_id: str) -> list[MessageRecord]:
         return [record for record in self.list_all() if record.submission_id == submission_id]
@@ -40,16 +41,18 @@ class AttemptStore:
         return self._store.read_all(self._layout.ccbd_attempts_path, loader=AttemptRecord.from_record)
 
     def get_latest(self, attempt_id: str) -> AttemptRecord | None:
-        for record in reversed(self.list_all()):
-            if record.attempt_id == attempt_id:
-                return record
-        return None
+        return self._store.find_last(
+            self._layout.ccbd_attempts_path,
+            predicate=lambda payload: str(payload.get('attempt_id') or '') == attempt_id,
+            loader=AttemptRecord.from_record,
+        )
 
     def get_latest_by_job_id(self, job_id: str) -> AttemptRecord | None:
-        for record in reversed(self.list_all()):
-            if record.job_id == job_id:
-                return record
-        return None
+        return self._store.find_last(
+            self._layout.ccbd_attempts_path,
+            predicate=lambda payload: str(payload.get('job_id') or '') == job_id,
+            loader=AttemptRecord.from_record,
+        )
 
     def list_message(self, message_id: str) -> list[AttemptRecord]:
         return [record for record in self.list_all() if record.message_id == message_id]
@@ -71,10 +74,11 @@ class ReplyStore:
         return self._store.read_all(self._layout.ccbd_replies_path, loader=ReplyRecord.from_record)
 
     def get_latest(self, reply_id: str) -> ReplyRecord | None:
-        for record in reversed(self.list_all()):
-            if record.reply_id == reply_id:
-                return record
-        return None
+        return self._store.find_last(
+            self._layout.ccbd_replies_path,
+            predicate=lambda payload: str(payload.get('reply_id') or '') == reply_id,
+            loader=ReplyRecord.from_record,
+        )
 
     def list_message(self, message_id: str) -> list[ReplyRecord]:
         return [record for record in self.list_all() if record.message_id == message_id]

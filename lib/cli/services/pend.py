@@ -8,12 +8,12 @@ from .daemon import connect_mounted_daemon
 
 
 def pend_target(context: CliContext, command: ParsedPendCommand) -> dict:
-    handle = connect_mounted_daemon(context, allow_restart_stale=True)
+    handle = connect_mounted_daemon(context, allow_restart_stale=False)
     assert handle.client is not None
     try:
         return _pend_target_with_client(handle.client, command.target)
     except CcbdClientError:
-        handle = connect_mounted_daemon(context, allow_restart_stale=True)
+        handle = connect_mounted_daemon(context, allow_restart_stale=False)
         assert handle.client is not None
         return _pend_target_with_client(handle.client, command.target)
 
@@ -23,30 +23,74 @@ def _pend_target_with_client(client, target: str) -> dict:
     if normalized.startswith('job_'):
         return client.get(normalized)
 
-    inbox_head = _safe_inbox_head(client, normalized)
+    inbox_head = _safe_mailbox_head(client, normalized)
     try:
         payload = client.request('get', {'agent_name': normalized})
     except CcbdClientError:
         if inbox_head is None:
             raise
-        return _mailbox_reply_payload(normalized, inbox_head)
+        if inbox_head.get('reply_id') is not None:
+            return _mailbox_reply_payload(normalized, inbox_head)
+        return {
+            'job_id': None,
+            'agent_name': normalized,
+            'target_kind': 'agent',
+            'target_name': normalized,
+            'provider_instance': None,
+            'provider': None,
+            'status': 'unknown',
+            'job': None,
+            'snapshot': None,
+            'reply': '',
+            'completion_reason': None,
+            'completion_confidence': None,
+            'updated_at': None,
+            'mailbox_summary_status': inbox_head.get('summary_status'),
+            'mailbox_summary_error': inbox_head.get('summary_error'),
+        }
 
-    if inbox_head is not None:
+    if inbox_head is not None and inbox_head.get('reply_id') is not None:
         payload = dict(payload)
         payload.update(_mailbox_overlay_fields(inbox_head))
+    elif inbox_head is not None:
+        payload = dict(payload)
+        payload['mailbox_summary_status'] = inbox_head.get('summary_status')
+        payload['mailbox_summary_error'] = inbox_head.get('summary_error')
     return payload
 
 
-def _safe_inbox_head(client, agent_name: str) -> dict | None:
+def _safe_mailbox_head(client, agent_name: str) -> dict | None:
+    mailbox_head_fn = getattr(client, 'mailbox_head', None)
+    if callable(mailbox_head_fn):
+        try:
+            payload = mailbox_head_fn(agent_name)
+        except Exception:
+            payload = None
+        if isinstance(payload, dict):
+            status = str(payload.get('summary_status') or '').strip().lower()
+            head = payload.get('head')
+            if isinstance(head, dict) and head.get('reply_id') is not None:
+                return head
+            if status in {'missing', 'error'}:
+                return {
+                    'summary_status': status,
+                    'summary_error': payload.get('summary_error'),
+                }
     inbox_fn = getattr(client, 'inbox', None)
     if not callable(inbox_fn):
         return None
     try:
-        payload = inbox_fn(agent_name)
+        payload = inbox_fn(agent_name, detail=False)
     except Exception:
         return None
+    status = str(payload.get('summary_status') or '').strip().lower()
     head = payload.get('head')
     if not isinstance(head, dict) or head.get('reply_id') is None:
+        if status in {'missing', 'error'}:
+            return {
+                'summary_status': status,
+                'summary_error': payload.get('summary_error'),
+            }
         return None
     return head
 
@@ -72,6 +116,8 @@ def _mailbox_reply_payload(agent_name: str, head: dict) -> dict:
 
 def _mailbox_overlay_fields(head: dict) -> dict[str, object]:
     return {
+        'mailbox_summary_status': head.get('summary_status'),
+        'mailbox_summary_error': head.get('summary_error'),
         'mailbox_reply_ready': True,
         'mailbox_reply_id': head.get('reply_id'),
         'mailbox_reply_from_agent': head.get('source_actor'),

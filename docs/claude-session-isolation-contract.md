@@ -15,6 +15,11 @@ It is the authoritative design anchor for:
 
 This document complements, but does not replace, the project startup contract in
 [docs/ccbd-startup-supervision-contract.md](/home/bfly/yunwei/ccb_source/docs/ccbd-startup-supervision-contract.md).
+Storage class naming, diagnostics classification, shared-cache eligibility, and
+cleanup sequencing for managed Claude files are defined by
+[docs/ccb-provider-state-storage-boundary-plan.md](/home/bfly/yunwei/ccb_source/docs/ccb-provider-state-storage-boundary-plan.md).
+Claude binary/version cache specifics are further narrowed by
+[docs/claude-binary-cache-dedup-plan.md](/home/bfly/yunwei/ccb_source/docs/claude-binary-cache-dedup-plan.md).
 
 ## 2. Identity Model
 
@@ -68,7 +73,12 @@ Inside that home, the managed Claude state is:
     cache layouts
 - `.ccb/agents/<agent>/provider-state/claude/home/.claude/skills/` when skill inheritance is enabled
 - `.ccb/agents/<agent>/provider-state/claude/home/.claude/commands/` when command inheritance is enabled
-- `.ccb/agents/<agent>/provider-state/claude/home/.claude/CLAUDE.md` when Claude prompt inheritance is enabled
+- `.ccb/agents/<agent>/provider-state/claude/home/.claude/CLAUDE.md`
+  - a CCB-generated memory projection when `inherit_memory = true`
+  - not a user-editable source file
+  - generated from inherited provider user memory, project `.ccb/ccb_memory.md`, project
+    `CLAUDE.md`, and optional `.ccb/agents/<agent>/memory.md`
+  - removed when `inherit_memory = false`
 - `.ccb/agents/<agent>/provider-state/claude/home/.claude.json`
   - contains managed workspace trust plus selected inherited Claude account
     metadata required for official login reuse; it is not a provider
@@ -163,9 +173,24 @@ When `ccb` starts a managed Claude agent:
 - when auth inheritance is disabled, startup must not silently keep stale
   managed Claude auth env state, stale copied login credential artifacts, or
   stale inherited Claude account metadata in `.claude.json`
-- when inheritance is enabled, it must refresh inherited Claude `skills/`,
-  `commands/`, and `.claude/CLAUDE.md` projections into the managed home on
-  each managed launch so source-home updates become visible after restart
+- when skill inheritance is enabled, startup must refresh inherited Claude
+  `skills/` into the managed home on each managed launch
+- when command inheritance is enabled, startup must refresh inherited Claude
+  `commands/` into the managed home on each managed launch
+- when memory inheritance is enabled, startup must refresh the managed
+  `.claude/CLAUDE.md` projection on each managed launch so source-home and
+  project-memory updates become visible after restart
+- `inherit_memory` defaults to true and is independent of `inherit_skills` and
+  `inherit_commands`; disabling skill inheritance must not disable memory
+  projection
+- managed `.claude/CLAUDE.md` projection must be generated atomically and
+  idempotently; unchanged content should not be rewritten only to refresh mtime
+- users must edit `.ccb/ccb_memory.md`, project `CLAUDE.md`, or
+  `.ccb/agents/<agent>/memory.md` rather than the managed projection file
+- managed Claude home materialization must receive `project_root`, logical
+  `agent_name`, and `workspace_path` from the startup context; it must not infer
+  project root by walking upward from provider-runtime paths, because runtime
+  state may be relocated outside the project `.ccb` tree
 - when inherited Claude hooks reference allowlisted source-home hook assets
   through home-relative paths such as `$HOME/.codeisland/...`, startup may copy
   those referenced assets into the managed home so the inherited hook command

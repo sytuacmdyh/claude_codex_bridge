@@ -6,7 +6,7 @@ from pathlib import Path
 from agents.config_loader import load_project_config
 from agents.models import AgentValidationError, normalize_agent_name
 from cli.context import CliContext
-from mailbox_runtime.targets import CMD_ACTOR, USER_ACTOR
+from mailbox_runtime.targets import USER_ACTOR
 from workspace.actors import resolve_workspace_actor
 
 
@@ -19,7 +19,6 @@ def resolve_ask_sender(context: CliContext, explicit_sender: str | None) -> str:
     allowed_session_actors = frozenset(
         {
             *[normalize_agent_name(name) for name in getattr(config, 'agents', {}) or {}],
-            *([CMD_ACTOR] if bool(getattr(config, 'cmd_enabled', False)) else []),
         }
     )
     session_actor = _resolve_session_actor(context, allowed_session_actors=allowed_session_actors)
@@ -30,8 +29,6 @@ def resolve_ask_sender(context: CliContext, explicit_sender: str | None) -> str:
     if workspace_actor:
         return workspace_actor
 
-    if bool(getattr(config, 'cmd_enabled', False)):
-        return CMD_ACTOR
     return USER_ACTOR
 
 
@@ -94,9 +91,6 @@ def _normalized_actor_candidate(value: str | None) -> str | None:
     try:
         return normalize_agent_name(text)
     except AgentValidationError:
-        lowered = text.lower()
-        if lowered == CMD_ACTOR:
-            return lowered
         return None
 
 

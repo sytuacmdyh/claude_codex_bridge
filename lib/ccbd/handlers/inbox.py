@@ -6,6 +6,9 @@ def build_inbox_handler(dispatcher):
         agent_name = str(payload.get('agent_name') or '').strip()
         if not agent_name:
             raise ValueError('inbox requires agent_name')
-        return dispatcher.inbox(agent_name)
+        detail = payload.get('detail')
+        if detail is not None:
+            detail = bool(detail)
+        return dispatcher.inbox(agent_name, detail=detail)
 
     return handle

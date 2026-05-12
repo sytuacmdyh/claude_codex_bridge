@@ -9,10 +9,19 @@ import pytest
 from ccbd.api_models import DeliveryScope, JobEvent, JobRecord, JobStatus, MessageEnvelope
 from ccbd.socket_client import CcbdClientError
 from cli.context import CliContext, CliContextBuilder
-from cli.models import ParsedPendCommand, ParsedWatchCommand
+from cli.models import ParsedAckCommand, ParsedCancelCommand, ParsedInboxCommand, ParsedPendCommand, ParsedQueueCommand, ParsedResubmitCommand, ParsedRetryCommand, ParsedTraceCommand, ParsedWatchCommand
+from cli.services import ack as ack_service
+from cli.services import cancel as cancel_service
 from cli.services.daemon import CcbdServiceError
+from cli.services import inbox as inbox_service
 from cli.services import pend as pend_service
+from cli.services import queue as queue_service
+from cli.services import resubmit as resubmit_service
+from cli.services import retry as retry_service
+from cli.services import trace as trace_service
 from cli.services import watch as watch_service
+from cli.phase2_runtime.handlers_mailbox import handle_watch
+from cli.render import render_observer_notice
 from cli.services.ask_runtime.watch import watch_ask_job as watch_ask_job_impl
 from cli.render import render_watch_batch, write_lines
 from completion.models import CompletionConfidence, CompletionDecision, CompletionFamily, CompletionState, CompletionStatus
@@ -122,9 +131,10 @@ class _MailboxPendClient:
             'generation': 2,
         }
 
-    def inbox(self, agent_name: str) -> dict:
+    def mailbox_head(self, agent_name: str) -> dict:
         assert agent_name == 'claude'
         return {
+            'target': 'claude',
             'head': {
                 'reply_id': 'rep_1',
                 'source_actor': 'codex',
@@ -136,7 +146,62 @@ class _MailboxPendClient:
                 'reply_heartbeat_silence_seconds': 600.0,
                 'job_id': 'job_demo',
                 'reply': 'task still running',
-            }
+            },
+        }
+
+    def inbox(self, agent_name: str) -> dict:
+        raise AssertionError('pend should use mailbox_head before inbox fallback')
+
+
+class _MailboxPendFallbackClient:
+    def request(self, op: str, payload: dict) -> dict:
+        assert op == 'get'
+        assert payload == {'agent_name': 'claude'}
+        raise CcbdClientError('get unavailable')
+
+    def inbox(self, agent_name: str, *, detail=None) -> dict:
+        assert agent_name == 'claude'
+        assert detail is False
+        return {
+            'target': 'claude',
+            'summary_status': 'ok',
+            'head': {
+                'reply_id': 'rep_2',
+                'source_actor': 'codex',
+                'reply_terminal_status': 'completed',
+                'reply_notice': False,
+                'reply_notice_kind': None,
+                'reply_finished_at': '2026-03-18T00:20:00Z',
+                'reply_last_progress_at': None,
+                'reply_heartbeat_silence_seconds': None,
+                'job_id': 'job_demo',
+                'reply': 'done from inbox fallback',
+            },
+        }
+
+
+class _MailboxPendSummaryMissingClient:
+    def request(self, op: str, payload: dict) -> dict:
+        assert op == 'get'
+        assert payload == {'agent_name': 'claude'}
+        return {
+            'job_id': 'job_demo',
+            'agent_name': 'claude',
+            'status': 'running',
+            'reply': '',
+            'completion_reason': None,
+            'completion_confidence': None,
+            'updated_at': '2026-03-18T00:00:05Z',
+            'generation': 2,
+        }
+
+    def mailbox_head(self, agent_name: str) -> dict:
+        assert agent_name == 'claude'
+        return {
+            'target': 'claude',
+            'summary_status': 'missing',
+            'summary_error': None,
+            'head': None,
         }
 
 
@@ -225,8 +290,13 @@ def test_watch_target_reconnects_after_socket_error(monkeypatch: pytest.MonkeyPa
             SimpleNamespace(client=stable),
         ]
     )
+    seen: list[bool] = []
 
-    monkeypatch.setattr(watch_service, 'connect_mounted_daemon', lambda context, allow_restart_stale: next(handles))
+    def _connect(context, allow_restart_stale):
+        seen.append(allow_restart_stale)
+        return next(handles)
+
+    monkeypatch.setattr(watch_service, 'connect_mounted_daemon', _connect)
     monkeypatch.setenv('CCB_WATCH_TIMEOUT_S', '1')
     monkeypatch.setenv('CCB_WATCH_POLL_INTERVAL_S', '0')
 
@@ -236,6 +306,7 @@ def test_watch_target_reconnects_after_socket_error(monkeypatch: pytest.MonkeyPa
     assert batches[0].generation == 2
     assert flaky.calls == [0]
     assert stable.calls == [0]
+    assert seen == [False, False]
 
 
 def test_watch_target_preserves_cursor_across_reconnect(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -277,8 +348,13 @@ def test_watch_target_preserves_cursor_across_reconnect(monkeypatch: pytest.Monk
             SimpleNamespace(client=second),
         ]
     )
+    seen: list[bool] = []
 
-    monkeypatch.setattr(watch_service, 'connect_mounted_daemon', lambda context, allow_restart_stale: next(handles))
+    def _connect(context, allow_restart_stale):
+        seen.append(allow_restart_stale)
+        return next(handles)
+
+    monkeypatch.setattr(watch_service, 'connect_mounted_daemon', _connect)
     monkeypatch.setenv('CCB_WATCH_TIMEOUT_S', '1')
     monkeypatch.setenv('CCB_WATCH_POLL_INTERVAL_S', '0')
 
@@ -289,6 +365,7 @@ def test_watch_target_preserves_cursor_across_reconnect(monkeypatch: pytest.Monk
     assert [batch.terminal for batch in batches] == [False, True]
     assert first.calls == [0, 2]
     assert second.calls == [2]
+    assert seen == [False, False]
 
 
 def test_watch_target_retries_when_reconnect_attempt_temporarily_fails(
@@ -301,9 +378,11 @@ def test_watch_target_retries_when_reconnect_attempt_temporarily_fails(
     flaky = _FlakyWatchClient()
     stable = _StableWatchClient()
     connects = {'count': 0}
+    seen: list[bool] = []
 
     def _connect(context, allow_restart_stale):
-        del context, allow_restart_stale
+        del context
+        seen.append(allow_restart_stale)
         connects['count'] += 1
         if connects['count'] == 1:
             return SimpleNamespace(client=flaky)
@@ -322,6 +401,7 @@ def test_watch_target_retries_when_reconnect_attempt_temporarily_fails(
     assert batches[0].reply == 'done'
     assert flaky.calls == [0]
     assert stable.calls == [0]
+    assert seen == [False, False, False]
 
 
 def test_watch_target_falls_back_to_persisted_terminal_job_when_daemon_stays_unreachable(
@@ -333,8 +413,11 @@ def test_watch_target_falls_back_to_persisted_terminal_job_when_daemon_stays_unr
     context = _context(project_root)
     _persist_terminal_job(project_root)
 
+    seen: list[bool] = []
+
     def _connect(context, allow_restart_stale):
-        del context, allow_restart_stale
+        del context
+        seen.append(allow_restart_stale)
         raise CcbdServiceError('daemon restarting')
 
     monkeypatch.setattr(watch_service, 'connect_mounted_daemon', _connect)
@@ -348,6 +431,7 @@ def test_watch_target_falls_back_to_persisted_terminal_job_when_daemon_stays_unr
     assert batches[0].status == 'completed'
     assert batches[0].reply == 'persisted reply'
     assert [event['event_id'] for event in batches[0].events] == ['evt1']
+    assert seen == [False]
 
 
 def test_watch_target_initial_connect_error_still_raises_without_persisted_terminal_state(
@@ -358,14 +442,109 @@ def test_watch_target_initial_connect_error_still_raises_without_persisted_termi
     project_root.mkdir()
     context = _context(project_root)
 
+    seen: list[bool] = []
+
     def _connect(context, allow_restart_stale):
-        del context, allow_restart_stale
+        del context
+        seen.append(allow_restart_stale)
         raise CcbdServiceError('project ccbd is unmounted; run `ccb` first')
 
     monkeypatch.setattr(watch_service, 'connect_mounted_daemon', _connect)
 
     with pytest.raises(CcbdServiceError, match='project ccbd is unmounted'):
         list(watch_service.watch_target(context, ParsedWatchCommand(project=None, target='job_demo')))
+    assert seen == [False]
+
+
+def test_ack_reply_uses_non_mutating_probe(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    project_root = tmp_path / 'repo-ack'
+    project_root.mkdir()
+    context = _context(project_root)
+    seen: list[bool] = []
+
+    def _invoke(context, *, allow_restart_stale, request_fn):
+        del context, request_fn
+        seen.append(allow_restart_stale)
+        return {'ok': True}
+
+    monkeypatch.setattr(ack_service, 'invoke_mounted_daemon', _invoke)
+
+    payload = ack_service.ack_reply(context, ParsedAckCommand(project=None, agent_name='claude', inbound_event_id='iev_123'))
+
+    assert payload == {'ok': True}
+    assert seen == [False]
+
+
+def test_cancel_job_uses_non_mutating_probe(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    project_root = tmp_path / 'repo-cancel'
+    project_root.mkdir()
+    context = _context(project_root)
+    seen: list[bool] = []
+
+    def _invoke(context, *, allow_restart_stale, request_fn):
+        del context, request_fn
+        seen.append(allow_restart_stale)
+        return {'ok': True}
+
+    monkeypatch.setattr(cancel_service, 'invoke_mounted_daemon', _invoke)
+
+    payload = cancel_service.cancel_job(context, ParsedCancelCommand(project=None, job_id='job_123'))
+
+    assert payload == {'ok': True}
+    assert seen == [False]
+
+
+def test_retry_attempt_uses_non_mutating_probe(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    project_root = tmp_path / 'repo-retry'
+    project_root.mkdir()
+    context = _context(project_root)
+    seen: list[bool] = []
+
+    def _invoke(context, *, allow_restart_stale, request_fn):
+        del context, request_fn
+        seen.append(allow_restart_stale)
+        return {
+            'target': 'att_123',
+            'message_id': 'msg_123',
+            'original_attempt_id': 'att_122',
+            'attempt_id': 'att_123',
+            'job_id': 'job_123',
+            'agent_name': 'claude',
+            'status': 'queued',
+        }
+
+    monkeypatch.setattr(retry_service, 'invoke_mounted_daemon', _invoke)
+
+    payload = retry_service.retry_attempt(context, ParsedRetryCommand(project=None, target='att_123'))
+
+    assert payload.target == 'att_123'
+    assert payload.message_id == 'msg_123'
+    assert seen == [False]
+
+
+def test_resubmit_message_uses_non_mutating_probe(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    project_root = tmp_path / 'repo-resubmit'
+    project_root.mkdir()
+    context = _context(project_root)
+    seen: list[bool] = []
+
+    def _invoke(context, *, allow_restart_stale, request_fn):
+        del context, request_fn
+        seen.append(allow_restart_stale)
+        return {
+            'original_message_id': 'msg_old',
+            'message_id': 'msg_new',
+            'submission_id': 'sub_new',
+            'jobs': ({'job_id': 'job_123', 'agent_name': 'claude'},),
+        }
+
+    monkeypatch.setattr(resubmit_service, 'invoke_mounted_daemon', _invoke)
+
+    payload = resubmit_service.resubmit_message(context, ParsedResubmitCommand(project=None, message_id='msg_old'))
+
+    assert payload.original_message_id == 'msg_old'
+    assert payload.message_id == 'msg_new'
+    assert seen == [False]
 
 
 def test_watch_ask_job_falls_back_to_persisted_terminal_job_when_daemon_stays_unreachable(
@@ -404,6 +583,46 @@ def test_watch_ask_job_falls_back_to_persisted_terminal_job_when_daemon_stays_un
     assert 'reply: persisted reply' in out.getvalue()
 
 
+def test_handle_watch_emits_non_terminal_observer_preamble_before_stream_batches() -> None:
+    out = StringIO()
+
+    batch = SimpleNamespace(
+        events=(
+            {
+                'event_id': 'evt-1',
+                'job_id': 'job_demo',
+                'agent_name': 'codex',
+                'type': 'job_started',
+                'timestamp': '2026-03-18T00:00:00Z',
+            },
+        ),
+        terminal=False,
+        job_id='job_demo',
+        agent_name='codex',
+        target_name='codex',
+        status='running',
+        reply='',
+    )
+    writes: list[tuple[str, ...]] = []
+    services = SimpleNamespace(
+        render_observer_notice=render_observer_notice,
+        watch_target=lambda context, command: [batch],
+        render_watch_batch=render_watch_batch,
+        write_lines=lambda out, lines: writes.append(tuple(lines)),
+    )
+
+    rc = handle_watch(None, None, out, services)
+
+    assert rc == 0
+    assert writes[0] == (
+        'observer_view: watch',
+        'observer_authority: supplementary_snapshot',
+        'observer_terminal: false',
+        'observer_notice: weak observer surface; non-terminal state may change; prefer ccb ask --wait / ccb ask wait <job_id>',
+    )
+    assert writes[1] == ('event: evt-1 job_demo codex job_started 2026-03-18T00:00:00Z',)
+
+
 def test_pend_target_reconnects_after_socket_error(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     project_root = tmp_path / 'repo'
     project_root.mkdir()
@@ -416,14 +635,20 @@ def test_pend_target_reconnects_after_socket_error(monkeypatch: pytest.MonkeyPat
             SimpleNamespace(client=stable),
         ]
     )
+    seen: list[bool] = []
 
-    monkeypatch.setattr(pend_service, 'connect_mounted_daemon', lambda context, allow_restart_stale: next(handles))
+    def _connect(context, allow_restart_stale):
+        seen.append(allow_restart_stale)
+        return next(handles)
+
+    monkeypatch.setattr(pend_service, 'connect_mounted_daemon', _connect)
 
     payload = pend_service.pend_target(context, ParsedPendCommand(project=None, target='job_demo'))
     assert payload['status'] == 'completed'
     assert payload['generation'] == 2
     assert flaky.calls == 1
     assert stable.calls == 1
+    assert seen == [False, False]
 
 
 def test_pend_target_merges_mailbox_head_reply_for_agent_target(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -431,17 +656,174 @@ def test_pend_target_merges_mailbox_head_reply_for_agent_target(monkeypatch: pyt
     project_root.mkdir()
     context = _context(project_root)
 
-    monkeypatch.setattr(
-        pend_service,
-        'connect_mounted_daemon',
-        lambda context, allow_restart_stale: SimpleNamespace(client=_MailboxPendClient()),
-    )
+    seen: list[bool] = []
+
+    def _connect(context, allow_restart_stale):
+        seen.append(allow_restart_stale)
+        return SimpleNamespace(client=_MailboxPendClient())
+
+    monkeypatch.setattr(pend_service, 'connect_mounted_daemon', _connect)
 
     payload = pend_service.pend_target(context, ParsedPendCommand(project=None, target='claude'))
 
     assert payload['status'] == 'running'
+    assert payload['mailbox_summary_status'] is None
     assert payload['mailbox_reply_ready'] is True
     assert payload['mailbox_reply_id'] == 'rep_1'
     assert payload['mailbox_reply_notice'] is True
     assert payload['mailbox_reply_notice_kind'] == 'heartbeat'
     assert payload['mailbox_reply_job_id'] == 'job_demo'
+    assert seen == [False]
+
+
+def test_pend_target_uses_summary_only_inbox_fallback(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    project_root = tmp_path / 'repo-pend-mailbox-fallback'
+    project_root.mkdir()
+    context = _context(project_root)
+
+    def _connect(context, allow_restart_stale):
+        del context, allow_restart_stale
+        return SimpleNamespace(client=_MailboxPendFallbackClient())
+
+    monkeypatch.setattr(pend_service, 'connect_mounted_daemon', _connect)
+
+    payload = pend_service.pend_target(context, ParsedPendCommand(project=None, target='claude'))
+
+    assert payload['status'] == 'mailbox_reply'
+    assert payload['mailbox_reply_ready'] is True
+    assert payload['mailbox_reply_id'] == 'rep_2'
+    assert payload['mailbox_reply'] == 'done from inbox fallback'
+
+
+def test_pend_target_surfaces_mailbox_summary_missing_without_fake_reply(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    project_root = tmp_path / 'repo-pend-summary-missing'
+    project_root.mkdir()
+    context = _context(project_root)
+
+    def _connect(context, allow_restart_stale):
+        del context, allow_restart_stale
+        return SimpleNamespace(client=_MailboxPendSummaryMissingClient())
+
+    monkeypatch.setattr(pend_service, 'connect_mounted_daemon', _connect)
+
+    payload = pend_service.pend_target(context, ParsedPendCommand(project=None, target='claude'))
+
+    assert payload['status'] == 'running'
+    assert payload['mailbox_summary_status'] == 'missing'
+    assert payload.get('mailbox_reply_ready') is None
+
+
+def test_queue_target_uses_non_mutating_probe(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    project_root = tmp_path / 'repo-queue'
+    project_root.mkdir()
+    context = _context(project_root)
+    seen: list[bool] = []
+    detail_seen: list[bool] = []
+
+    def _invoke(context, *, allow_restart_stale, request_fn):
+        seen.append(allow_restart_stale)
+        return request_fn(
+            SimpleNamespace(
+                queue=lambda target, *, detail=None: detail_seen.append(bool(detail)) or {
+                    'target': target,
+                    'agent_count': 0,
+                    'queued_agent_count': 0,
+                    'total_queue_depth': 0,
+                    'agents': [],
+                }
+            )
+        )
+
+    monkeypatch.setattr(queue_service, 'invoke_mounted_daemon', _invoke)
+
+    payload = queue_service.queue_target(context, ParsedQueueCommand(project=None, target='all'))
+
+    assert payload['target'] == 'all'
+    assert seen == [False]
+    assert detail_seen == [False]
+
+
+def test_trace_target_uses_non_mutating_probe(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    project_root = tmp_path / 'repo-trace'
+    project_root.mkdir()
+    context = _context(project_root)
+    seen: list[bool] = []
+
+    def _invoke(context, *, allow_restart_stale, request_fn):
+        seen.append(allow_restart_stale)
+        return request_fn(SimpleNamespace(trace=lambda target: {'target': target, 'resolved_kind': 'job'}))
+
+    monkeypatch.setattr(trace_service, 'invoke_mounted_daemon', _invoke)
+
+    payload = trace_service.trace_target(context, ParsedTraceCommand(project=None, target='job_demo'))
+
+    assert payload['target'] == 'job_demo'
+    assert seen == [False]
+
+
+def test_inbox_target_uses_non_mutating_probe(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    project_root = tmp_path / 'repo-inbox'
+    project_root.mkdir()
+    context = _context(project_root)
+    seen: list[bool] = []
+    detail_seen: list[bool] = []
+
+    def _invoke(context, *, allow_restart_stale, request_fn):
+        seen.append(allow_restart_stale)
+        return request_fn(
+            SimpleNamespace(
+                inbox=lambda agent_name, *, detail=None: detail_seen.append(bool(detail)) or {
+                    'agent': {'agent_name': agent_name}
+                }
+            )
+        )
+
+    monkeypatch.setattr(inbox_service, 'invoke_mounted_daemon', _invoke)
+
+    payload = inbox_service.inbox_target(context, ParsedInboxCommand(project=None, agent_name='claude'))
+
+    assert payload['agent']['agent_name'] == 'claude'
+    assert seen == [False]
+    assert detail_seen == [False]
+
+
+def test_queue_target_passes_detail_flag(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    project_root = tmp_path / 'repo-queue-detail'
+    project_root.mkdir()
+    context = _context(project_root)
+    detail_seen: list[bool] = []
+
+    def _invoke(context, *, allow_restart_stale, request_fn):
+        del context, allow_restart_stale
+        return request_fn(
+            SimpleNamespace(
+                queue=lambda target, *, detail=None: detail_seen.append(bool(detail)) or {'target': target, 'agent': {}}
+            )
+        )
+
+    monkeypatch.setattr(queue_service, 'invoke_mounted_daemon', _invoke)
+
+    queue_service.queue_target(context, ParsedQueueCommand(project=None, target='claude', detail=True))
+
+    assert detail_seen == [True]
+
+
+def test_inbox_target_passes_detail_flag(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    project_root = tmp_path / 'repo-inbox-detail'
+    project_root.mkdir()
+    context = _context(project_root)
+    detail_seen: list[bool] = []
+
+    def _invoke(context, *, allow_restart_stale, request_fn):
+        del context, allow_restart_stale
+        return request_fn(
+            SimpleNamespace(
+                inbox=lambda agent_name, *, detail=None: detail_seen.append(bool(detail)) or {'agent': {'agent_name': agent_name}}
+            )
+        )
+
+    monkeypatch.setattr(inbox_service, 'invoke_mounted_daemon', _invoke)
+
+    inbox_service.inbox_target(context, ParsedInboxCommand(project=None, agent_name='claude', detail=True))
+
+    assert detail_seen == [True]

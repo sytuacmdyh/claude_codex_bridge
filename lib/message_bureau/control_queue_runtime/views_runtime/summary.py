@@ -1,14 +1,17 @@
 from __future__ import annotations
 
-from .agent import agent_queue
+from .agent import agent_queue_detail, agent_queue_summary
 from ..common import summary_targets
 
 
-def queue_summary(service, target: str = 'all') -> dict[str, object]:
+def queue_summary(service, target: str = 'all', *, detail: bool | None = None) -> dict[str, object]:
     normalized = str(target or '').strip().lower() or 'all'
     if normalized != 'all':
-        return {'target': normalized, 'agent': agent_queue(service, normalized)}
-    agent_summaries = [agent_queue(service, agent_name) for agent_name in summary_targets(service)]
+        if detail is True:
+            return {'target': normalized, 'agent': agent_queue_detail(service, normalized)}
+        return {'target': normalized, 'agent': agent_queue_summary(service, normalized)}
+    agent_names = summary_targets(service)
+    agent_summaries = [agent_queue_summary(service, agent_name) for agent_name in agent_names]
     return {
         'target': 'all',
         'agent_count': len(agent_summaries),

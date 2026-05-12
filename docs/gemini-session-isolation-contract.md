@@ -15,6 +15,9 @@ It is the authoritative design anchor for:
 
 This document complements, but does not replace, the project startup contract in
 [docs/ccbd-startup-supervision-contract.md](/home/bfly/yunwei/ccb_source/docs/ccbd-startup-supervision-contract.md).
+Storage class naming, diagnostics classification, shared-cache eligibility, and
+cleanup sequencing for managed Gemini files are defined by
+[docs/ccb-provider-state-storage-boundary-plan.md](/home/bfly/yunwei/ccb_source/docs/ccb-provider-state-storage-boundary-plan.md).
 
 ## 2. Identity Model
 
@@ -66,6 +69,12 @@ Inside that home, the managed Gemini state is:
   - only when inherited login auth is projected into the managed home
 - `.ccb/agents/<agent>/provider-state/gemini/home/.gemini/google_accounts.json`
   - only when inherited Google login auth is projected into the managed home
+- `.ccb/agents/<agent>/provider-state/gemini/home/.gemini/GEMINI.md`
+  - a CCB-generated memory projection when `inherit_memory = true`
+  - not a user-editable source file
+  - generated from inherited provider user memory, project `.ccb/ccb_memory.md`, project
+    `GEMINI.md`, and optional `.ccb/agents/<agent>/memory.md`
+  - removed when `inherit_memory = false`
 - `.ccb/agents/<agent>/provider-state/gemini/home/.gemini/tmp/`
 
 If the effective Gemini home is explicitly overridden by a provider profile, the
@@ -92,8 +101,8 @@ When `ccb` starts a managed Gemini agent:
 
 - it must explicitly set the effective `HOME`
 - it must explicitly set the effective `GEMINI_CLI_HOME` to the same managed
-  home root as `HOME`; Gemini CLI core derives its global `.gemini` directory
-  as `$GEMINI_CLI_HOME/.gemini`
+  home root as `HOME`; Gemini CLI core treats `GEMINI_CLI_HOME` as its home
+  replacement and derives global memory from `$GEMINI_CLI_HOME/.gemini`
 - it must explicitly set the effective `GEMINI_ROOT`
 - it must ensure `GEMINI_ROOT == <gemini_home>/.gemini/tmp`
 - it must create the managed home and managed temp root before launching Gemini
@@ -103,6 +112,17 @@ When `ccb` starts a managed Gemini agent:
   hook/trust installation and before launcher command assembly
 - managed `settings.json` projection must treat inherited system settings as the
   baseline and preserve managed runtime sections such as `hooks`
+- managed `settings.json` must set `contextFileName` to `GEMINI.md` when
+  managed memory is projected so the current Gemini CLI loads the generated
+  project memory file from the managed home
+- Gemini CLI 0.41.2 was smoke-tested with `HOME`, `GEMINI_CLI_HOME`, and
+  `GEMINI_ROOT` pointing at a managed home; a token present only in managed
+  `.gemini/GEMINI.md` was available to `gemini --prompt`, confirming the
+  generated bundle is loaded through the managed home path. Re-run this smoke
+  when upgrading Gemini CLI memory discovery behavior.
+- when `inherit_memory = false`, startup must remove managed
+  `.gemini/GEMINI.md` and clear the managed `contextFileName` value only when
+  it points to that generated file
 - managed `settings.json` projection must treat `security.auth.selectedType` as
   auth-selection state, not generic config; projection of that field must stay
   consistent with `inherit_api` / `inherit_auth`
@@ -211,6 +231,8 @@ should treat that provider-state tree as project-local evidence.
 Diagnostics export should include:
 
 - managed home summary metadata
+- managed `.gemini/GEMINI.md` projection metadata and
+  `gemini_memory_projection_{ok,skipped,failed}` events
 - managed Gemini temp-root paths and related project-local session files
 - non-secret isolated hook/trust overlays when present
 - explicit contract-violation evidence when Gemini writes outside the managed

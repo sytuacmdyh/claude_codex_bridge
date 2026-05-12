@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+import shutil
+import subprocess
+import uuid
 
 from agents.config_loader import load_project_config
 from cli.context import CliContext
@@ -8,7 +11,10 @@ from cli.models import ParsedStartCommand
 import cli.services.tmux_start_layout as tmux_start_layout
 from project.resolver import bootstrap_project
 from storage.paths import PathLayout
+from terminal_runtime import TmuxBackend
+from terminal_runtime.placeholders import pane_placeholder_cmd
 from terminal_runtime.tmux_identity import pane_visual
+import pytest
 
 
 def _context(project_root: Path) -> CliContext:
@@ -35,13 +41,20 @@ def test_prepare_tmux_start_layout_uses_current_pane_as_cmd_anchor(monkeypatch, 
         def set_pane_user_option(self, pane_id: str, name: str, value: str) -> None:
             calls.append((name, pane_id, value))
 
-        def create_pane(self, cmd: str, cwd: str, direction: str = 'right', percent: int = 50, parent_pane: str | None = None) -> str:
+        def split_pane(
+            self,
+            parent_pane_id: str,
+            direction: str,
+            percent: int,
+            cmd: str | None = None,
+            cwd: str | None = None,
+        ) -> str:
             mapping = {
                 ('right', '%0'): '%1',
                 ('bottom', '%0'): '%2',
                 ('bottom', '%1'): '%3',
             }
-            return mapping[(direction, str(parent_pane))]
+            return mapping[(direction, str(parent_pane_id))]
 
     monkeypatch.setattr(tmux_start_layout, 'TmuxBackend', FakeTmuxBackend)
 
@@ -85,13 +98,20 @@ def test_prepare_tmux_start_layout_assigns_slot_stable_styles(monkeypatch, tmp_p
         ) -> None:
             styles[pane_id] = (border_style, active_border_style)
 
-        def create_pane(self, cmd: str, cwd: str, direction: str = 'right', percent: int = 50, parent_pane: str | None = None) -> str:
+        def split_pane(
+            self,
+            parent_pane_id: str,
+            direction: str,
+            percent: int,
+            cmd: str | None = None,
+            cwd: str | None = None,
+        ) -> str:
             mapping = {
                 ('right', '%0'): '%1',
                 ('bottom', '%0'): '%2',
                 ('bottom', '%1'): '%3',
             }
-            return mapping[(direction, str(parent_pane))]
+            return mapping[(direction, str(parent_pane_id))]
 
     monkeypatch.setattr(tmux_start_layout, 'TmuxBackend', FakeTmuxBackend)
 
@@ -134,7 +154,14 @@ def test_prepare_tmux_start_layout_uses_root_pane_for_first_agent_when_cmd_disab
         def set_pane_user_option(self, pane_id: str, name: str, value: str) -> None:
             calls.append((name, pane_id, value))
 
-        def create_pane(self, cmd: str, cwd: str, direction: str = 'right', percent: int = 50, parent_pane: str | None = None) -> str:
+        def split_pane(
+            self,
+            parent_pane_id: str,
+            direction: str,
+            percent: int,
+            cmd: str | None = None,
+            cwd: str | None = None,
+        ) -> str:
             raise AssertionError('single-agent no-cmd layout should reuse root pane')
 
     monkeypatch.setattr(tmux_start_layout, 'TmuxBackend', FakeTmuxBackend)
@@ -148,3 +175,99 @@ def test_prepare_tmux_start_layout_uses_root_pane_for_first_agent_when_cmd_disab
     assert layout.cmd_pane_id is None
     assert layout.agent_panes == {'demo': '%0'}
     assert ('title', '%0', 'demo') in calls
+
+
+def test_prepare_tmux_start_layout_creates_split_panes_with_placeholder(monkeypatch, tmp_path: Path) -> None:
+    project_root = tmp_path / 'repo-layout-placeholder'
+    ctx = _context(project_root)
+    config = load_project_config(project_root).config
+    created: list[tuple[str, str | None]] = []
+    live_panes = {'%0'}
+
+    class FakeTmuxBackend:
+        def get_current_pane_id(self) -> str:
+            return '%0'
+
+        def set_pane_title(self, pane_id: str, title: str) -> None:
+            return None
+
+        def set_pane_user_option(self, pane_id: str, name: str, value: str) -> None:
+            return None
+
+        def set_pane_style(
+            self,
+            pane_id: str,
+            *,
+            border_style: str | None = None,
+            active_border_style: str | None = None,
+        ) -> None:
+            return None
+
+        def split_pane(
+            self,
+            parent_pane_id: str,
+            *,
+            direction: str = 'right',
+            percent: int = 50,
+            cmd: str | None = None,
+            cwd: str | None = None,
+        ) -> str:
+            if parent_pane_id not in live_panes:
+                raise RuntimeError(f'Cannot split: pane {parent_pane_id} does not exist')
+            if not cmd:
+                live_panes.discard(parent_pane_id)
+            pane_id = f'%{len(created) + 1}'
+            created.append((cmd or '', parent_pane_id))
+            live_panes.add(pane_id)
+            return pane_id
+
+    monkeypatch.setattr(tmux_start_layout, 'TmuxBackend', FakeTmuxBackend)
+
+    layout = tmux_start_layout.prepare_tmux_start_layout(
+        ctx,
+        config=config,
+        targets=('agent1', 'agent2', 'agent3'),
+    )
+
+    assert layout.agent_panes == {'agent1': '%2', 'agent2': '%1', 'agent3': '%3'}
+    assert created
+    assert all(cmd == pane_placeholder_cmd() for cmd, _parent in created)
+
+
+def test_prepare_tmux_start_layout_survives_exiting_default_command(tmp_path: Path) -> None:
+    if shutil.which('tmux') is None:
+        pytest.skip('tmux is not installed')
+
+    project_root = tmp_path / 'repo-layout-stress'
+    ctx = _context(project_root)
+    config = load_project_config(project_root).config
+    socket_path = Path('/tmp') / f'ccb-{uuid.uuid4().hex[:12]}.sock'
+    backend = TmuxBackend(socket_path=str(socket_path))
+
+    try:
+        for _ in range(3):
+            session_name = f'ccb-layout-{uuid.uuid4().hex[:8]}'
+            backend._tmux_run(
+                ['new-session', '-d', '-s', session_name, '-c', str(project_root), 'sh', '-lc', pane_placeholder_cmd()],
+                check=True,
+            )
+            backend._tmux_run(['set-option', '-t', session_name, 'default-command', 'false'], check=True)
+            root = (
+                backend._tmux_run(['list-panes', '-t', session_name, '-F', '#{pane_id}'], capture=True, check=True).stdout
+                or ''
+            ).splitlines()[0].strip()
+
+            layout = tmux_start_layout.prepare_tmux_start_layout(
+                ctx,
+                config=config,
+                targets=('agent1', 'agent2', 'agent3'),
+                tmux_backend=backend,
+                root_pane_id=root,
+            )
+            assert set(layout.agent_panes) == {'agent1', 'agent2', 'agent3'}
+            for pane_id in layout.agent_panes.values():
+                assert backend.pane_exists(pane_id)
+            backend._tmux_run(['kill-session', '-t', session_name], check=False)
+    finally:
+        subprocess.run(['tmux', '-S', str(socket_path), 'kill-server'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        socket_path.unlink(missing_ok=True)

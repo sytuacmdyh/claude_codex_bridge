@@ -17,7 +17,7 @@ from provider_core.runtime_shared import (
 from terminal_runtime import TmuxBackend
 from workspace.models import WorkspacePlan
 
-from .provider_hooks import prepare_provider_workspace
+from .provider_hooks import prepare_provider_workspace, provider_workspace_path_for_prepare
 from .provider_binding import AgentBinding, resolve_agent_binding
 from .runtime_launch_runtime import (
     best_effort_kill_tmux_pane as _best_effort_kill_tmux_pane_impl,
@@ -56,11 +56,20 @@ def ensure_agent_runtime(
     style_index: int = 0,
     tmux_socket_path: str | None = None,
 ) -> RuntimeLaunchResult:
+    launcher = _runtime_launcher(spec.provider)
+    runtime_dir = context.paths.agent_provider_runtime_dir(spec.name, spec.provider)
+    provider_workspace_path = provider_workspace_path_for_prepare(
+        command=command,
+        spec=spec,
+        plan=plan,
+        runtime_dir=runtime_dir,
+        launcher=launcher,
+    )
     prepare_provider_workspace(
         layout=context.paths,
         spec=spec,
-        workspace_path=plan.workspace_path,
-        completion_dir=context.paths.agent_provider_runtime_dir(spec.name, spec.provider) / 'completion',
+        workspace_path=provider_workspace_path,
+        completion_dir=runtime_dir / 'completion',
         agent_name=spec.name,
     )
     return _ensure_agent_runtime_impl(

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from ..common import display_text
+from ..common import display_text, observer_status_is_terminal, render_observer_notice
 
 
 def render_job_state(payload: Mapping[str, object]) -> tuple[str, ...]:
@@ -30,6 +30,14 @@ def render_job_state(payload: Mapping[str, object]) -> tuple[str, ...]:
 
 def render_pend(payload: Mapping[str, object]) -> tuple[str, ...]:
     lines = list(render_job_state(payload))
+    terminal = observer_status_is_terminal(payload.get('status'))
+    if payload.get('mailbox_reply_terminal_status') is not None:
+        terminal = observer_status_is_terminal(payload.get('mailbox_reply_terminal_status'))
+    lines.extend(render_observer_notice(view='pend', terminal=terminal))
+    if payload.get('mailbox_summary_status') is not None:
+        lines.append(f'mailbox_summary_status: {payload.get("mailbox_summary_status")}')
+    if payload.get('mailbox_summary_error') is not None:
+        lines.append(f'mailbox_summary_error: {payload.get("mailbox_summary_error")}')
     if payload.get('mailbox_reply_ready') is not None:
         lines.extend(
             [

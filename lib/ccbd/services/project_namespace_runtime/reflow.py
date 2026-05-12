@@ -49,6 +49,7 @@ def reflow_project_workspace(
         window_name=context.desired_control_window_name,
         project_root=controller._layout.project_root,
         select=False,
+        timeout_s=session_probe_timeout_s,
     )
     next_workspace_epoch = max(1, int(current.workspace_epoch)) + 1
     desired_workspace_name = context.desired_workspace_window_name
@@ -59,6 +60,7 @@ def reflow_project_workspace(
         window_name=temporary_workspace_name,
         project_root=controller._layout.project_root,
         select=True,
+        timeout_s=session_probe_timeout_s,
     )
     root_pane = window_root_pane(
         context.backend,
@@ -66,6 +68,7 @@ def reflow_project_workspace(
             context.desired_session_name,
             temporary_workspace.window_id or temporary_workspace.window_name,
         ),
+        timeout_s=session_probe_timeout_s,
     )
     apply_namespace_identity(
         controller,
@@ -80,6 +83,7 @@ def reflow_project_workspace(
         context.backend,
         session_name=context.desired_session_name,
         window_name=current_workspace_name,
+        timeout_s=session_probe_timeout_s,
     )
     if current_workspace is not None:
         kill_window(
@@ -88,6 +92,7 @@ def reflow_project_workspace(
                 context.desired_session_name,
                 current_workspace.window_id or current_workspace.window_name,
             ),
+            timeout_s=session_probe_timeout_s,
         )
     rename_window(
         context.backend,
@@ -96,16 +101,19 @@ def reflow_project_workspace(
             temporary_workspace.window_id or temporary_workspace.window_name,
         ),
         new_name=desired_workspace_name,
+        timeout_s=session_probe_timeout_s,
     )
     control_window = find_window(
         context.backend,
         session_name=context.desired_session_name,
         window_name=context.desired_control_window_name,
+        timeout_s=session_probe_timeout_s,
     )
     workspace_window = find_window(
         context.backend,
         session_name=context.desired_session_name,
         window_name=desired_workspace_name,
+        timeout_s=session_probe_timeout_s,
     )
     if workspace_window is not None:
         select_window(

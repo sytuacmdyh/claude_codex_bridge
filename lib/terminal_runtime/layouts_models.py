@@ -15,7 +15,14 @@ class TmuxLayoutBackend(Protocol):
         percent: int = 50,
         parent_pane: str | None = None,
     ) -> str: ...
-    def split_pane(self, parent_pane_id: str, direction: str, percent: int) -> str: ...
+    def split_pane(
+        self,
+        parent_pane_id: str,
+        direction: str,
+        percent: int,
+        cmd: str | None = None,
+        cwd: str | None = None,
+    ) -> str: ...
     def set_pane_title(self, pane_id: str, title: str) -> None: ...
     def _tmux_run(
         self,

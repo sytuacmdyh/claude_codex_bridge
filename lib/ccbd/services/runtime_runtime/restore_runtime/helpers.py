@@ -25,12 +25,23 @@ def restore_attachment_kwargs(*, layout, spec, runtime) -> dict[str, object]:
 
 
 def touch_active_runtime(*, registry, runtime, timestamp: str, health: str | None = None):
-    updated_runtime = replace(
+    def _update(current):
+        base = current or runtime
+        return replace(
+            base,
+            last_seen_at=timestamp,
+            health=health if health is not None else base.health,
+        )
+
+    updated_runtime = registry.update(runtime.agent_name, _update)
+    if updated_runtime is not None:
+        return updated_runtime
+    fallback = replace(
         runtime,
         last_seen_at=timestamp,
         health=health if health is not None else runtime.health,
     )
-    return registry.upsert(updated_runtime)
+    return registry.upsert(fallback)
 
 
 def runtime_is_active(runtime) -> bool:

@@ -218,7 +218,7 @@ ccb
 ### 5.2.2 运行中读路径
 
 ```text
-ccb ps/ping/pend/logs/watch
+ccb doctor ps / ccb ping / ccb pend / ccb doctor logs / ccb pend --watch
   -> ccbd RPC
   -> runtime authority / job store / mailbox store
   -> return structured result

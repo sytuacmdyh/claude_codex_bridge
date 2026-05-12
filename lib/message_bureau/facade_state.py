@@ -79,8 +79,8 @@ def next_retry_index(service, message_id: str, agent_name: str) -> int:
     return latest + 1
 
 
-def refresh_mailbox(service, agent_name: str, *, updated_at: str) -> None:
-    service._mailbox_kernel.refresh_mailbox(agent_name, updated_at=updated_at)
+def rebuild_mailbox_summary(service, agent_name: str, *, updated_at: str) -> None:
+    service._mailbox_kernel.rebuild_mailbox_summary(agent_name, updated_at=updated_at)
 
 
 def _active_attempts(attempts: list[AttemptRecord]) -> list[AttemptRecord]:
@@ -124,7 +124,7 @@ def _attempt_terminal_state(statuses: set[AttemptState]) -> MessageState:
 __all__ = [
     'latest_attempts_for_message',
     'next_retry_index',
-    'refresh_mailbox',
+    'rebuild_mailbox_summary',
     'refresh_message_state',
     'resolve_origin_message_id',
     'set_message_state',

@@ -6,15 +6,27 @@ from ccbd.restore_report_store import CcbdRestoreReportStore
 from ccbd.services.project_namespace_state import ProjectNamespaceEventStore, ProjectNamespaceStateStore
 from ccbd.services.start_policy import CcbdStartPolicyStore
 from completion.snapshot_store import CompletionSnapshotStore
+from mailbox_kernel import DeliveryLeaseStore, InboundEventStore, MailboxKernelService, MailboxStore
 from provider_execution.state_store import ExecutionStateStore
 
 from ..tmux_cleanup_history import TmuxCleanupHistoryStore
 
 
 def doctor_stores(context) -> dict[str, object]:
+    mailbox_store = MailboxStore(context.paths)
+    inbox_store = InboundEventStore(context.paths)
+    lease_store = DeliveryLeaseStore(context.paths)
     return {
         'runtime': AgentRuntimeStore(context.paths),
         'snapshot': CompletionSnapshotStore(context.paths),
+        'mailbox': mailbox_store,
+        'mailbox_kernel': MailboxKernelService(
+            context.paths,
+            clock=lambda: '1970-01-01T00:00:00Z',
+            mailbox_store=mailbox_store,
+            inbound_store=inbox_store,
+            lease_store=lease_store,
+        ),
         'execution_state': ExecutionStateStore(context.paths),
         'restore_report': CcbdRestoreReportStore(context.paths),
         'startup_report': CcbdStartupReportStore(context.paths),

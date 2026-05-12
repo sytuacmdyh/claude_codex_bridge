@@ -13,6 +13,9 @@ from .path_helpers import (
     SocketPlacement,
     choose_runtime_state_placement,
     choose_socket_placement,
+    normalized_segment,
+    read_runtime_root_marker_payload,
+    read_runtime_root_ref_payload,
     runtime_root_marker_path,
     runtime_root_ref_path,
     runtime_state_placement_payload,
@@ -30,6 +33,8 @@ from .paths_ccbd import (
     ProjectAnchorPathMixin,
 )
 from .paths_targets import TargetPathMixin
+
+_SHARED_CACHE_PROVIDERS = frozenset({'claude', 'codex', 'gemini'})
 
 
 @dataclass(frozen=True)
@@ -84,6 +89,58 @@ class PathLayout(
         return self._state_root
 
     @property
+    def shared_cache_dir(self) -> Path:
+        return self.runtime_state_root / 'shared-cache'
+
+    @property
+    def project_memory_path(self) -> Path:
+        return self.ccb_dir / 'ccb_memory.md'
+
+    @property
+    def memory_seed_path(self) -> Path:
+        return self.runtime_state_root / 'state' / 'memory.seed.json'
+
+    @property
+    def runtime_memory_dir(self) -> Path:
+        return self.runtime_state_root / 'runtime' / 'memory'
+
+    def runtime_memory_bundle_path(self, agent_name: str) -> Path:
+        from agents.models import normalize_agent_name
+
+        return self.runtime_memory_dir / f'{normalize_agent_name(agent_name)}.md'
+
+    def provider_shared_cache_dir(self, provider: str) -> Path:
+        normalized = normalized_segment(provider, label='provider')
+        if normalized != str(provider or '').strip().lower() or normalized not in _SHARED_CACHE_PROVIDERS:
+            supported = ', '.join(sorted(_SHARED_CACHE_PROVIDERS))
+            raise ValueError(f'provider must be one of: {supported}')
+        return self.shared_cache_dir / normalized
+
+    def ensure_provider_shared_cache_dir(self, provider: str, *, created_at: str | None = None) -> Path:
+        placement = self.runtime_state_placement
+        if placement.filesystem_hint == 'wsl_drvfs' and placement.root_kind != 'relocated':
+            raise RuntimeError('shared cache requires relocated runtime state for WSL drvfs project anchors')
+        cache_dir = self.provider_shared_cache_dir(provider)
+        timestamp = created_at or _utc_now()
+        self.ensure_runtime_state_root(created_at=timestamp)
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        manifest_path = cache_dir / 'MANIFEST.json'
+        if not manifest_path.exists():
+            atomic_write_json(
+                manifest_path,
+                {
+                    'schema_version': 1,
+                    'record_type': 'ccb_shared_cache_manifest',
+                    'provider': cache_dir.name,
+                    'project_id': self.project_id,
+                    'runtime_state_root': str(self.runtime_state_root),
+                    'created_at': timestamp,
+                    'entries': [],
+                },
+            )
+        return cache_dir
+
+    @property
     def runtime_root_marker_path(self) -> Path:
         return runtime_root_marker_path(self.runtime_state_root)
 
@@ -117,8 +174,9 @@ class PathLayout(
 
     def _project_socket_placement(self, stem: str) -> SocketPlacement:
         return choose_socket_placement(
-            preferred_path=self.ccb_dir / 'ccbd' / f'{stem}.sock',
+            preferred_path=self.ccbd_dir / f'{stem}.sock',
             project_socket_key=self.project_socket_key,
+            preferred_root_kind='runtime' if self.runtime_state_placement.root_kind == 'relocated' else 'project',
         )
 
     def _project_socket_path(self, stem: str) -> Path:
@@ -152,11 +210,13 @@ class PathLayout(
         }
 
     def _validate_runtime_root_marker(self, *, allow_missing: bool = False) -> None:
-        payload = _read_json_object(self.runtime_root_marker_path)
+        payload = read_runtime_root_marker_payload(self.runtime_root_marker_path)
         if not payload:
-            if allow_missing:
+            if allow_missing and not self.runtime_root_marker_path.exists():
                 return
-            raise FileNotFoundError(str(self.runtime_root_marker_path))
+            if not self.runtime_root_marker_path.exists():
+                raise FileNotFoundError(str(self.runtime_root_marker_path))
+            raise RuntimeError(f'{self.runtime_root_marker_path} is invalid')
         expected = {
             'project_id': self.project_id,
             'project_root': str(self.project_root),
@@ -166,11 +226,13 @@ class PathLayout(
         _validate_expected_fields(payload, expected, label=str(self.runtime_root_marker_path))
 
     def _validate_runtime_root_ref(self, *, allow_missing: bool = False) -> None:
-        payload = _read_json_object(self.runtime_root_ref_path)
+        payload = read_runtime_root_ref_payload(self.ccb_dir, project_id=self.project_id)
         if not payload:
-            if allow_missing:
+            if allow_missing and not self.runtime_root_ref_path.exists():
                 return
-            raise FileNotFoundError(str(self.runtime_root_ref_path))
+            if not self.runtime_root_ref_path.exists():
+                raise FileNotFoundError(str(self.runtime_root_ref_path))
+            raise RuntimeError(f'{self.runtime_root_ref_path} is invalid')
         expected = {
             'project_id': self.project_id,
             'runtime_state_root': str(self.runtime_state_root),

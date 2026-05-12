@@ -378,14 +378,15 @@ def test_runtime_supervision_loop_mounts_missing_runtime(tmp_path: Path) -> None
         current = registry.get(agent_name)
         assert current is not None
         seen_starting.append(current.state)
-        registry.upsert_authority(
-            AgentRuntime(
-                **{
-                    **_runtime(agent_name, project_id=ctx.project_id, layout=layout, pid=101, health='healthy').__dict__,
-                    'runtime_ref': 'tmux:%55',
-                    'session_ref': 'codex-session-new',
-                }
-            )
+        runtime_service.attach(
+            agent_name=agent_name,
+            workspace_path=str(layout.workspace_path(agent_name)),
+            backend_type='pane-backed',
+            runtime_ref='tmux:%55',
+            session_ref='codex-session-new',
+            health='healthy',
+            provider='codex',
+            daemon_generation=21,
         )
 
     loop = RuntimeSupervisionLoop(
@@ -433,14 +434,15 @@ def test_runtime_supervision_loop_remounts_foreign_pane_binding(tmp_path: Path) 
 
     def _mount(agent_name: str) -> None:
         calls.append(agent_name)
-        registry.upsert_authority(
-            AgentRuntime(
-                **{
-                    **_runtime(agent_name, project_id=ctx.project_id, layout=layout, pid=202, health='healthy').__dict__,
-                    'runtime_ref': 'tmux:%202',
-                    'session_ref': 'codex-session-remounted',
-                }
-            )
+        runtime_service.attach(
+            agent_name=agent_name,
+            workspace_path=str(layout.workspace_path(agent_name)),
+            backend_type='pane-backed',
+            runtime_ref='tmux:%202',
+            session_ref='codex-session-remounted',
+            health='healthy',
+            provider='codex',
+            daemon_generation=33,
         )
 
     loop = RuntimeSupervisionLoop(
@@ -820,6 +822,57 @@ def test_runtime_supervision_loop_restores_cmd_slot_locally_while_other_agent_bu
     assert fake_backend.respawn_calls[0]['pane_id'] == '%cmd'
 
 
+def test_runtime_supervision_loop_suspends_recovery_when_lifecycle_is_stopping(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project_root = tmp_path / 'repo-supervision-stopping'
+    project_root.mkdir()
+    ctx = bootstrap_project(project_root)
+    layout = PathLayout(project_root)
+    config = replace(_provider_config('codex'), cmd_enabled=True, layout_spec='cmd; codex')
+    registry = AgentRegistry(layout, config)
+    runtime_service = RuntimeService(layout, registry, ctx.project_id, clock=lambda: '2026-03-18T00:00:00Z')
+    degraded = _runtime('codex', project_id=ctx.project_id, layout=layout, pid=101, health='pane-dead')
+    degraded.runtime_ref = 'tmux:%41'
+    degraded.tmux_socket_path = str(layout.ccbd_tmux_socket_path)
+    degraded.pane_state = 'dead'
+    registry.upsert(degraded)
+    remount_calls: list[str] = []
+
+    monkeypatch.setattr(
+        'ccbd.supervision.cmd_slot.ProjectNamespaceController',
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError('cmd recovery should be suspended')),
+    )
+    monkeypatch.setattr(
+        runtime_service,
+        'refresh_provider_binding',
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError('agent recovery should be suspended')),
+    )
+    loop = RuntimeSupervisionLoop(
+        project_id=ctx.project_id,
+        layout=layout,
+        config=config,
+        registry=registry,
+        runtime_service=runtime_service,
+        remount_project_fn=lambda reason: remount_calls.append(reason),
+        clock=lambda: '2026-03-18T00:00:10Z',
+        generation_getter=lambda: 50,
+        supervision_suspended_fn=lambda: True,
+    )
+
+    statuses = loop.reconcile_once()
+
+    assert statuses == {'codex': 'suspended'}
+    assert remount_calls == []
+    runtime = registry.get('codex')
+    assert runtime is not None
+    assert runtime.health == 'pane-dead'
+    assert runtime.reconcile_state == 'degraded'
+    assert runtime.daemon_generation is None
+    assert SupervisionEventStore(layout).read_all() == []
+
+
 def test_runtime_supervision_loop_reflows_cmd_when_local_replacement_is_unavailable(tmp_path: Path, monkeypatch) -> None:
     project_root = tmp_path / 'repo-supervision-cmd-reflow'
     project_root.mkdir()
@@ -1030,6 +1083,104 @@ def test_runtime_supervision_loop_persists_mount_failure(tmp_path: Path) -> None
     events = SupervisionEventStore(layout).read_all()
     assert [event.event_kind for event in events] == ['mount_started', 'mount_failed']
     assert events[1].details == {'reason': 'RuntimeError: launch boom'}
+
+
+def test_runtime_supervision_loop_ignores_mount_failure_after_external_attach_supersedes_epoch(tmp_path: Path) -> None:
+    project_root = tmp_path / 'repo-supervision-mount-superseded'
+    project_root.mkdir()
+    ctx = bootstrap_project(project_root)
+    layout = PathLayout(project_root)
+    config = _provider_config('codex')
+    registry = AgentRegistry(layout, config)
+    runtime_service = RuntimeService(layout, registry, ctx.project_id, clock=lambda: '2026-03-18T00:00:00Z')
+
+    def _mount(agent_name: str) -> None:
+        runtime_service.attach(
+            agent_name=agent_name,
+            workspace_path=str(layout.workspace_path(agent_name)),
+            backend_type='pane-backed',
+            runtime_ref='tmux:%91',
+            session_ref='codex-session-external',
+            binding_source='external-attach',
+        )
+        raise RuntimeError('launch boom')
+
+    loop = RuntimeSupervisionLoop(
+        project_id=ctx.project_id,
+        layout=layout,
+        config=config,
+        registry=registry,
+        runtime_service=runtime_service,
+        mount_agent_fn=_mount,
+        clock=lambda: '2026-03-18T00:00:10Z',
+        generation_getter=lambda: 22,
+    )
+
+    statuses = loop.reconcile_once()
+
+    assert statuses == {'codex': 'healthy'}
+    runtime = registry.get('codex')
+    assert runtime is not None
+    assert runtime.state is AgentState.IDLE
+    assert runtime.health == 'healthy'
+    assert runtime.runtime_ref == 'tmux:%91'
+    assert runtime.session_ref == 'codex-session-external'
+    assert runtime.binding_source.value == 'external-attach'
+    assert runtime.binding_generation == 2
+    assert runtime.runtime_generation == 2
+    assert runtime.daemon_generation == 22
+    assert runtime.reconcile_state == 'steady'
+    assert runtime.restart_count == 0
+    assert runtime.last_failure_reason is None
+    events = SupervisionEventStore(layout).read_all()
+    assert [event.event_kind for event in events] == ['mount_started', 'mount_superseded']
+    assert events[1].details == {'mount_attempt_id': events[0].details.get('mount_attempt_id')} if events[0].details else {'mount_attempt_id': events[1].details['mount_attempt_id']}
+
+
+def test_runtime_supervision_loop_keeps_concurrent_external_attach_out_of_starting_state(tmp_path: Path) -> None:
+    project_root = tmp_path / 'repo-supervision-concurrent-external-attach'
+    project_root.mkdir()
+    ctx = bootstrap_project(project_root)
+    layout = PathLayout(project_root)
+    config = _provider_config('codex')
+    registry = AgentRegistry(layout, config)
+    runtime_service = RuntimeService(layout, registry, ctx.project_id, clock=lambda: '2026-03-18T00:00:00Z')
+
+    def _mount(agent_name: str) -> None:
+        runtime_service.attach(
+            agent_name=agent_name,
+            workspace_path=str(layout.workspace_path(agent_name)),
+            backend_type='pane-backed',
+            runtime_ref='tmux:%92',
+            session_ref='codex-session-external',
+            binding_source='external-attach',
+        )
+
+    loop = RuntimeSupervisionLoop(
+        project_id=ctx.project_id,
+        layout=layout,
+        config=config,
+        registry=registry,
+        runtime_service=runtime_service,
+        mount_agent_fn=_mount,
+        clock=lambda: '2026-03-18T00:00:10Z',
+        generation_getter=lambda: 22,
+    )
+
+    statuses = loop.reconcile_once()
+
+    assert statuses == {'codex': 'healthy'}
+    runtime = registry.get('codex')
+    assert runtime is not None
+    assert runtime.state is AgentState.IDLE
+    assert runtime.health == 'healthy'
+    assert runtime.runtime_ref == 'tmux:%92'
+    assert runtime.session_ref == 'codex-session-external'
+    assert runtime.binding_source.value == 'external-attach'
+    assert runtime.reconcile_state == 'steady'
+    assert runtime.restart_count == 0
+    events = SupervisionEventStore(layout).read_all()
+    assert [event.event_kind for event in events] == ['mount_started', 'mount_superseded']
 
 
 def test_runtime_supervision_loop_defers_transient_mount_failure(tmp_path: Path) -> None:

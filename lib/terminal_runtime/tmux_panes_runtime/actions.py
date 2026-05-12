@@ -3,7 +3,15 @@ from __future__ import annotations
 import subprocess
 
 
-def split_pane(service, parent_pane_id: str, *, direction: str, percent: int) -> str:
+def split_pane(
+    service,
+    parent_pane_id: str,
+    *,
+    direction: str,
+    percent: int,
+    cmd: str | None = None,
+    cwd: str | None = None,
+) -> str:
     if not parent_pane_id:
         raise ValueError("parent_pane_id is required")
     _unzoom_parent_if_needed(service, parent_pane_id)
@@ -16,7 +24,7 @@ def split_pane(service, parent_pane_id: str, *, direction: str, percent: int) ->
     split_length = _split_length_for_percent(pane_size, direction_norm=direction_norm, percent=split_percent)
     try:
         cp = service.tmux_run_fn(
-            split_window_command(parent_pane_id, flag=flag, split_length=split_length),
+            split_window_command(parent_pane_id, flag=flag, split_length=split_length, cmd=cmd, cwd=cwd),
             check=True,
             capture=True,
         )
@@ -80,18 +88,36 @@ def _read_pane_size(service, parent_pane_id: str) -> str:
     return "unknown"
 
 
-def split_window_command(parent_pane_id: str, *, flag: str, split_length: int) -> list[str]:
-    return [
+def split_window_command(
+    parent_pane_id: str,
+    *,
+    flag: str,
+    split_length: int,
+    cmd: str | None = None,
+    cwd: str | None = None,
+) -> list[str]:
+    args = [
         "split-window",
         flag,
         "-l",
         str(split_length),
         "-t",
         parent_pane_id,
+    ]
+    start_dir = str(cwd or '').strip()
+    if start_dir:
+        args.extend(['-c', start_dir])
+    args.extend(
+        [
         "-P",
         "-F",
         "#{pane_id}",
-    ]
+        ]
+    )
+    command = str(cmd or '').strip()
+    if command:
+        args.extend(['sh', '-lc', command])
+    return args
 
 
 def split_window_error_text(
@@ -159,4 +185,5 @@ __all__ = [
     "set_pane_title",
     "set_pane_user_option",
     "split_pane",
+    "split_window_command",
 ]

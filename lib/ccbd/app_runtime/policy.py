@@ -4,6 +4,8 @@ import inspect
 
 from ccbd.services.start_policy import CcbdStartPolicy, recovery_start_options as recovery_start_options_impl
 
+from .request_guard import lifecycle_is_stopping
+
 
 def persist_start_policy(app, *, auto_permission: bool, source: str = 'start_command') -> None:
     app.start_policy_store.save(
@@ -26,6 +28,14 @@ def recovery_start_options(app) -> tuple[bool, bool]:
 
 
 def mount_agent_from_policy(app, agent_name: str) -> None:
+    if _background_recovery_suspended(app):
+        return
+    try:
+        policy = app.start_policy_store.load()
+    except Exception:
+        policy = None
+    if policy is None:
+        return
     restore, auto_permission = recovery_start_options(app)
     _start_runtime_supervisor(
         app,
@@ -39,6 +49,8 @@ def mount_agent_from_policy(app, agent_name: str) -> None:
 
 
 def remount_project_from_policy(app, reason: str) -> None:
+    if _background_recovery_suspended(app):
+        return
     restore, auto_permission = recovery_start_options(app)
     reason_text = str(reason or '').strip()
     _start_runtime_supervisor(
@@ -71,6 +83,14 @@ def _start_runtime_supervisor(app, **kwargs) -> object:
             if key in signature.parameters
         }
     return start_fn(**kwargs)
+
+
+def _background_recovery_suspended(app) -> bool:
+    try:
+        lifecycle = app.lifecycle_store.load()
+    except Exception:
+        return False
+    return lifecycle_is_stopping(lifecycle)
 
 
 __all__ = [

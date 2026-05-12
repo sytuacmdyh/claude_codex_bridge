@@ -2,17 +2,21 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from ..common import display_text
+from ..common import display_text, observer_status_is_terminal, render_observer_notice
 
 
 def render_inbox(payload: Mapping[str, object]) -> tuple[str, ...]:
     agent = payload.get('agent') or {}
     head = payload.get('head') or {}
+    terminal = observer_status_is_terminal(head.get('reply_terminal_status'))
+    status = 'ok' if payload.get('summary_status') == 'ok' else 'degraded'
     lines: list[str] = [
-        'inbox_status: ok',
+        f'inbox_status: {status}',
+        *render_observer_notice(view='inbox', terminal=terminal),
         f'target: {payload.get("target")}',
         f'agent_name: {agent.get("agent_name")}',
         f'mailbox_id: {agent.get("mailbox_id")}',
+        f'summary_status: {payload.get("summary_status")}',
         f'mailbox_state: {agent.get("mailbox_state")}',
         f'lease_version: {agent.get("lease_version")}',
         f'queue_depth: {agent.get("queue_depth")}',
@@ -23,6 +27,16 @@ def render_inbox(payload: Mapping[str, object]) -> tuple[str, ...]:
         f'head_event_type: {head.get("event_type")}',
         f'head_status: {head.get("status")}',
     ]
+    if payload.get('summary_error') is not None:
+        lines.append(f'summary_error: {payload.get("summary_error")}')
+    if payload.get('summary_status') == 'missing':
+        lines.append(
+            'summary_notice: persisted mailbox summary is missing; routine observer view is degraded; use `ccb doctor` or wait for maintenance refresh'
+        )
+    elif payload.get('summary_status') == 'error':
+        lines.append(
+            'summary_notice: persisted mailbox summary is unreadable; routine observer view is degraded; use `ccb doctor` for diagnostics'
+        )
     if head.get('reply_id') is not None:
         lines.extend(
             [
@@ -41,7 +55,11 @@ def render_inbox(payload: Mapping[str, object]) -> tuple[str, ...]:
             lines.append(f'head_reply_heartbeat_silence_seconds: {head.get("reply_heartbeat_silence_seconds")}')
     if head.get('reply') is not None:
         lines.append(f'reply: {display_text(head.get("reply"))}')
-    for item in payload.get('items') or ():
+    items = payload.get('items')
+    if items == [] and payload.get('item_count') not in (None, 0):
+        lines.append('inbox_details: omitted; rerun with `ccb pend --inbox --detail <agent>` or `ccb inbox --detail <agent>` for inbox-item detail')
+        return tuple(lines)
+    for item in items or ():
         parts = [
             'inbox_item:',
             f'pos={item.get("position")}',

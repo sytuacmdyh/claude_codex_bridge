@@ -396,8 +396,8 @@ lib/askd/services/message_bureau/
   - deadline priority
   - interactive vs batch lanes
 - Add operator tooling for recovery:
-  - `ccb retry <job_id>`
-  - `ccb resubmit <job_id>`
+  - `ccb repair retry <job_id|attempt_id>`
+  - `ccb repair resubmit <message_id>`
   - `ccb wait <job_id|submission_id>`
   - `ccb queue <agent|all>`
   - `ccb barrier <group>`

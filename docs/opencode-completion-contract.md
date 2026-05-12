@@ -3,6 +3,9 @@
 This document defines the authoritative completion contract for the `opencode`
 provider in `ccb_source`.
 
+Managed OpenCode startup/config isolation is also anchored here because
+OpenCode does not yet have a separate session-isolation contract.
+
 ### Authority
 
 - `CCB_REQ_ID` is a request-binding marker only.
@@ -34,6 +37,23 @@ provider in `ccb_source`.
 - In `no_wrap`, `opencode` may still surface reply previews and completed
   replies from the bound session, but the result is degraded because it is not
   anchored by `CCB_REQ_ID`.
+
+### Managed Config Projection
+
+- CCB launches managed OpenCode with `OPENCODE_CONFIG` pointing to a generated
+  config file under `.ccb/agents/<agent>/provider-state/opencode/opencode.json`.
+- The generated config is CCB-owned projected config, not user-editable source.
+- CCB must not rewrite `project_root/opencode.json`; when that file exists,
+  startup reads it and merges its fields into the generated config.
+- User project config wins for all fields except `instructions`.
+- `instructions` is merged as a stable union of user entries plus the generated
+  CCB project-memory bridge entry `.ccb/runtime/memory/<agent>.md`.
+- Invalid project `opencode.json` must not block startup; CCB writes a minimal
+  generated config and records `opencode_config_merge_failed` in agent events.
+- `inherit_memory = false` removes the generated OpenCode config and omits
+  `OPENCODE_CONFIG` from the managed launch environment.
+- Project `AGENTS.md` and `.ccb/agents/<agent>/memory.md` remain input sources;
+  CCB does not edit them during OpenCode startup.
 
 ### Non-Goals
 

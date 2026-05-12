@@ -32,10 +32,11 @@ class JobStore:
         return self.get_latest_target(TargetKind.AGENT, agent_name, job_id)
 
     def get_latest_target(self, target_kind: TargetKind | str, target_name: str, job_id: str) -> JobRecord | None:
-        for record in reversed(self.list_target(target_kind, target_name)):
-            if record.job_id == job_id:
-                return record
-        return None
+        return self._store.find_last(
+            self._layout.target_jobs_path(target_kind, target_name),
+            predicate=lambda payload: str(payload.get('job_id') or '') == job_id,
+            loader=_job_record_from_record,
+        )
 
 
 class JobEventStore:
@@ -59,11 +60,16 @@ class JobEventStore:
         target_name: str,
         start_line: int = 0,
     ) -> tuple[int, list[JobEvent]]:
-        return self._store.read_since(
+        line_no, rows = self._store.read_since(
             self._layout.target_events_path(target_kind, target_name),
             start_line,
-            loader=_job_event_from_record,
         )
+        events: list[JobEvent] = []
+        for row in rows:
+            if row.get('record_type') != 'job_event':
+                continue
+            events.append(_job_event_from_record(row))
+        return line_no, events
 
 
 class SubmissionStore:
@@ -78,10 +84,11 @@ class SubmissionStore:
         return self._store.read_all(self._layout.ccbd_submissions_path, loader=_submission_record_from_record)
 
     def get_latest(self, submission_id: str) -> SubmissionRecord | None:
-        for record in reversed(self.list_all()):
-            if record.submission_id == submission_id:
-                return record
-        return None
+        return self._store.find_last(
+            self._layout.ccbd_submissions_path,
+            predicate=lambda payload: str(payload.get('submission_id') or '') == submission_id,
+            loader=_submission_record_from_record,
+        )
 
 
 def _validate_record(record: dict, expected_type: str) -> None:

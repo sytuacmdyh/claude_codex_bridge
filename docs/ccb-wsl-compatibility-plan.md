@@ -131,7 +131,7 @@ WSL 兼容性必须收敛到统一的 runtime/system 边界，而不是散落在
 
 一旦发生 WSL 兼容性回退，诊断面必须能回答：
 
-- 原本期望的项目内 socket 路径是什么
+- 原本期望的当前 runtime-root socket 路径是什么
 - 实际启用的运行时 socket 路径是什么
 - 为什么回退
 - 当前使用的是哪类 socket root
@@ -167,10 +167,11 @@ WSL 兼容性必须收敛到统一的 runtime/system 边界，而不是散落在
 
 选择规则固定为：
 
-1. 优先尝试项目内 `.ccb/ccbd/<stem>.sock`
-2. 若路径长度超限，则回退到 runtime socket root
-3. 若项目目录位于不支持 Unix socket bind 的文件系统，则回退到 runtime socket root
-4. `ccbd.sock` 与 `tmux.sock` 必须共用同一套选择逻辑
+1. 优先尝试当前 runtime root 下的 `ccbd/<stem>.sock`
+2. 若项目运行态已迁移到 runtime-state root，则 socket preferred path 也必须跟随 runtime-state root，而不是继续锚定在 project anchor
+3. 若路径长度超限，则回退到 runtime socket root
+4. 若当前 preferred root 位于不支持 Unix socket bind 的文件系统，则回退到 runtime socket root
+5. `ccbd.sock` 与 `tmux.sock` 必须共用同一套选择逻辑
 
 ### 5.3 WSL mounted drive 识别
 
@@ -181,7 +182,7 @@ WSL 兼容性必须收敛到统一的 runtime/system 边界，而不是散落在
 
 这些路径应直接视为：
 
-- `unsupported_filesystem_for_unix_socket`
+- runtime-state relocation 触发条件，而不是 socket preferred path 仍然停留在 project anchor 的理由
 
 后续若要扩展到更一般的 mount 能力探测，应在同一 policy 内扩展，而不是把判断重新散回调用点。
 
@@ -369,8 +370,8 @@ staging 只是执行介质隔离，不改变安装语义：
 
 新增回归测试：
 
-- 项目路径在 `/mnt/c/...` 时，`ccbd_socket_path` 回退到 runtime root
-- 项目路径在 `/mnt/e/...` 时，`tmux_socket_path` 回退到 runtime root
+- 项目路径在 `/mnt/c/...` 时，runtime-state root 迁移到本机 Linux state root，socket preferred path 跟随 runtime-state root
+- 当 relocated runtime-state root 下的 socket 路径仍超长时，`ccbd_socket_path` / `tmux_socket_path` 再回退到 runtime socket root
 - 非 WSL 普通 Linux 项目路径仍优先使用 `.ccb/ccbd/*.sock`
 - 长路径与 WSL mounted drive 两类回退原因要能区分
 

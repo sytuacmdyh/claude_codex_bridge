@@ -7,7 +7,7 @@
   <img src="https://img.shields.io/badge/模型皆可控-CF1322?style=for-the-badge" alt="模型皆可控">
 </p>
 
-[![Version](https://img.shields.io/badge/version-6.0.29-orange.svg)]()
+[![Version](https://img.shields.io/badge/version-6.1.7-orange.svg)]()
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey.svg)]()
 
 [English](README.md) | **中文**
@@ -74,10 +74,9 @@
 <details>
 <summary><b>最新版本亮点</b></summary>
 
-- **WSL Runtime State 已迁移**：挂载盘 WSL 项目中，项目 authority 仍留在 `.ccb`，`ccbd` 和 agent runtime state 会迁到本机 Linux state root，并带有显式 marker 与诊断映射。
-- **Provider Lookup 和 Ask Routing 保持稳定**：relocated runtime 目录仍能回溯到 project anchor，用于 session discovery 和 ask sender attribution。
-- **Control-plane socket 保持抗抖**：慢 client 不再阻塞新探测，短暂 connect race 会在原 timeout 预算内重试。
-- **README 持续对齐当前版本**：安装、配置、更新和委派说明继续对齐当前 CLI 表面。
+- **Codex 共享记忆刷新已修复**：`.ccb/ccb_memory.md` 变化后，managed Codex 启动会避开旧 `resume` 上下文并加载新的项目记忆。
+- **Ask skill 提交更严格**：Claude 和 Droid ask skill 只使用 heredoc 提交，并在提交后立即结束，不再轮询回复。
+- **项目记忆只有一个锚点**：`.ccb/ccb_memory.md` 是所有 managed agent 共享的项目全局记忆文档。
 
 完整历史见 [新版本记录](#新版本记录)。
 
@@ -100,6 +99,8 @@ tmux 复制粘贴：鼠标左键拖拽即可复制，`Ctrl+Shift+V` 粘贴。
 ## 配置控制
 
 `ccb` 的行为由 `.ccb/ccb.config` 控制。它是项目级、用户自己维护的配置文件；如果不存在，CCB 会优先回退到 `~/.ccb/ccb.config`，仍不存在时再使用代码内置默认配置，不会自动写入新文件。
+
+`.ccb/ccb_memory.md` 是项目全局记忆文档。
 
 <details>
 <summary><b>布局</b></summary>
@@ -206,7 +207,7 @@ ccb reinstall           # 清理后重新安装
    当 `ccb` 和你的 agent CLI 运行在同一个类 Unix shell 里时，使用这条路径。
 
 ```bash
-git clone https://github.com/bfly123/claude_codex_bridge.git
+git clone https://github.com/SeemSeam/claude_codex_bridge.git
 cd claude_codex_bridge
 ./install.sh install
 ```
@@ -215,7 +216,7 @@ cd claude_codex_bridge
    当你的 agent CLI 原生运行在 Windows 时，使用这条路径。
 
 ```powershell
-git clone https://github.com/bfly123/claude_codex_bridge.git
+git clone https://github.com/SeemSeam/claude_codex_bridge.git
 cd claude_codex_bridge
 powershell -ExecutionPolicy Bypass -File .\install.ps1 install
 ```
@@ -232,6 +233,10 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1 install
 </details>
 
 安装说明：上面的命令目前是从 git checkout 安装。安装后运行 `ccb update`，CCB 会下载最新稳定 GitHub release 包，并自动完成托管 release 升级。
+
+## 开发工具
+
+维护者专用的 release 和仓库管理工具放在 `dev_tools/`。这些工具进入 git 管理，但不会打进官方 release 包。
 
 ## 如何使用
 
@@ -280,7 +285,7 @@ ccb reinstall
 感谢 [Linux.do 社区](https://linux.do) 在测试、反馈和讨论中的支持。
 
 <div align="center">
-<img src="assets/weixin.png" alt="微信群" width="300">
+<img src="assets/weixin.jpg" alt="微信群" width="300">
 </div>
 
 ---
@@ -291,11 +296,75 @@ ccb reinstall
 历史说明：下面较旧的发布记录里仍可能出现 `askd`、旧 flag 或已移除命令。这些内容仅作为 changelog 历史保留，不代表当前 CLI 入口。
 
 <details open>
+<summary><b>v6.1.7</b> - Codex 记忆刷新 Hotfix</summary>
+
+- `.ccb/ccb_memory.md` 变化后，Codex 会刷新共享项目记忆，不再继续 resume 旧 AGENTS 上下文。
+- Claude 和 Droid ask skill 改为 heredoc 提交，并在提交后立即结束。
+
+</details>
+
+<details>
+<summary><b>v6.1.6</b> - 启动与 Claude 认证 Hotfix</summary>
+
+- 修复首次启动时 ccbd start 与 heartbeat maintenance 的 pane 竞争。
+- `.ccb/ccb_memory.md` 是唯一的 CCB 共享记忆文档。
+- 增加 Claude macOS `Claude Code-credentials` Keychain 查找。
+
+</details>
+
+<details>
+<summary><b>v6.1.5</b> - Tmux 启动 Hotfix</summary>
+
+- 修复启动时可能出现的 `Cannot split: pane ... does not exist` 和 `respawn pane failed: can't find pane`。
+- Provider pane 仍保持原 managed respawn 启动路径。
+
+</details>
+
+<details>
+<summary><b>v6.1.4</b> - 项目共享记忆 V1</summary>
+
+- `.ccb/ccb_memory.md` 是项目全局记忆文档。
+
+</details>
+
+<details>
+<summary><b>v6.1.2</b> - Provider 存储边界加固</summary>
+
+- **存储分类显式化**：`ccb doctor storage` 现在区分 authority、session state、secret、workspace、user content、projected config、rebuildable cache 和 startup authority bundle。
+- **安全清理入口落地**：`ccb cleanup` 会在 `ccbd` 或 ask job 活跃时拒绝执行，只清理安全的可重建 provider cache，并保留 session、auth 和当前 Claude binary。
+- **Shared Cache 护栏补齐**：未来 provider shared-cache 路径统一落在 effective runtime-state root 下，并加入 WSL drvfs 安全检查和 manifest 创建。
+
+</details>
+
+<details>
+<summary><b>v6.1.1</b> - Ask Skill 和记忆注入清理</summary>
+
+- **只安装 Ask Skill**：Claude、Codex 和 Droid/Factory 安装现在只发布 `ask` skill，并清理 `ping`、`pend`、`all-plan`、`file-op` 等旧 CCB helper skill。
+- **移除全局记忆注入**：安装器不再向全局 `CLAUDE.md`、安装目录 `AGENTS.md` 或 `.clinerules` 写入 CCB 协作块；已存在的 CCB 标记块会在安装时清理。
+- **删除旧 Skill 源模板**：仓库内的 skill 模板现在只保留各 provider 的 `ask` skill 资产。
+
+</details>
+
+<details>
+<summary><b>v6.1.0</b> - CCBD Ask 稳定化和 Observer 收敛</summary>
+
+- **Ask Submit Fastpath 稳定化**：`ccb ask` 不再等待 provider readiness、mailbox history projection 或长 maintenance tick，提交回执保持有界
+- **Lifecycle / Shutdown Race 收口**：stop-all、shutdown、restart 和后台 supervision 不再通过 stale work 复活 stopped runtime 或回退 terminal job
+- **Provider Completion Recovery 加固**：Codex polling 会跟随 restart 后的新 session binding，从当前 managed session log 读取回复并推进 job 终态
+- **Mailbox Summary Read Model 落地**：日常 `queue`、`inbox`、`pend` 路径优先读取维护好的 summary，summary 缺失或损坏时显式 degraded
+- **Observer Surface 明确弱化**：`pend`、`watch`、`queue`、`inbox` 都是非权威快照；`ccb ask wait <job_id>` 才是终态 authority
+- **真实平台验证补齐**：GitHub Actions 新增 macOS 和 WSL ccbd/ask smoke、通讯矩阵、短 soak、fastpath stress
+
+</details>
+
+<details>
 <summary><b>v6.0.29</b> - WSL Runtime State 迁移</summary>
 
 - **运行态移出挂载盘**：在 `/mnt/<drive>/...` 下的 WSL 项目中，项目 authority 仍留在 `.ccb`，`ccbd/` 和 agent runtime state 会迁移到本机 Linux state root，并写入显式 marker
 - **诊断和 Bundle 映射更新**：doctor 输出和 support bundle 现在会暴露 project anchor、runtime-state root、迁移原因，并把 relocated runtime 文件映射回逻辑 `.ccb` archive 路径
 - **Provider Lookup 和 Ask Routing 保持稳定**：relocated runtime 目录仍能回溯到 project anchor，用于 session discovery 和 ask sender attribution，Linux/macOS 默认布局不变
+- **Runtime marker 会校验**：relocated runtime marker 和 ref 现在会拒绝格式错误或归属不匹配的 payload，避免旧残留悄悄把一个项目映射到另一个项目
+- **WSL Smoke 与最终合同一致**：发布 smoke 现在检查 relocation 的最终 runtime-root 路径，而不是把第一阶段的迁移结果当成 socket fallback 终点
 
 </details>
 

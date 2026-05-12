@@ -37,9 +37,6 @@ def launch_tmux_runtime(
     runtime_dir.mkdir(parents=True, exist_ok=True)
     launch_session_id = launch_session_id_fn(spec.name)
     prepared = prepared_state(launcher, runtime_dir)
-    backend = tmux_backend(backend_factory, tmux_socket_path)
-    pane_title_marker = pane_title_marker_fn(context, spec)
-    start_cmd = launcher.build_start_cmd(command, spec, runtime_dir, launch_session_id)
     runtime_cwd = run_cwd(
         launcher,
         command=command,
@@ -47,6 +44,18 @@ def launch_tmux_runtime(
         plan=plan,
         runtime_dir=runtime_dir,
         launch_session_id=launch_session_id,
+    )
+    prepared['run_cwd'] = str(runtime_cwd)
+    if launcher.prepare_launch_context is not None:
+        prepared = dict(launcher.prepare_launch_context(context, spec, plan, runtime_dir, prepared) or prepared)
+    backend = tmux_backend(backend_factory, tmux_socket_path)
+    pane_title_marker = pane_title_marker_fn(context, spec)
+    start_cmd = launcher.build_start_cmd(
+        command,
+        spec,
+        runtime_dir,
+        launch_session_id,
+        prepared_state=prepared,
     )
     pane_id = launch_pane(
         backend,

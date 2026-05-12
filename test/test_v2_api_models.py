@@ -35,17 +35,7 @@ def test_message_envelope_normalizes_agent_names_and_system_sender() -> None:
     assert envelope.from_actor == 'system'
 
 
-def test_message_envelope_preserves_cmd_and_email_actors() -> None:
-    cmd_envelope = MessageEnvelope(
-        project_id='proj',
-        to_agent='Agent1',
-        from_actor='cmd',
-        body='hello',
-        task_id=None,
-        reply_to=None,
-        message_type='ask',
-        delivery_scope=DeliveryScope.SINGLE,
-    )
+def test_message_envelope_preserves_non_agent_actors() -> None:
     email_envelope = MessageEnvelope(
         project_id='proj',
         to_agent='Agent1',
@@ -56,9 +46,19 @@ def test_message_envelope_preserves_cmd_and_email_actors() -> None:
         message_type='ask',
         delivery_scope=DeliveryScope.SINGLE,
     )
+    user_envelope = MessageEnvelope(
+        project_id='proj',
+        to_agent='Agent1',
+        from_actor='user',
+        body='hello',
+        task_id=None,
+        reply_to=None,
+        message_type='ask',
+        delivery_scope=DeliveryScope.SINGLE,
+    )
 
-    assert cmd_envelope.from_actor == 'cmd'
     assert email_envelope.from_actor == 'email'
+    assert user_envelope.from_actor == 'user'
 
 
 def test_job_record_requires_terminal_decision_for_terminal_state() -> None:
@@ -148,11 +148,11 @@ def test_message_envelope_rejects_invalid_sender() -> None:
         )
 
 
-def test_submission_record_preserves_cmd_sender() -> None:
+def test_submission_record_preserves_user_sender() -> None:
     submission = SubmissionRecord(
         submission_id='sub-1',
         project_id='proj',
-        from_actor='CMD',
+        from_actor='USER',
         target_scope='single',
         task_id=None,
         job_ids=['job-1'],
@@ -160,7 +160,7 @@ def test_submission_record_preserves_cmd_sender() -> None:
         updated_at='2026-03-18T00:00:01Z',
     )
 
-    assert submission.from_actor == 'cmd'
+    assert submission.from_actor == 'user'
 
 
 def test_job_record_normalizes_agent_target_identity() -> None:

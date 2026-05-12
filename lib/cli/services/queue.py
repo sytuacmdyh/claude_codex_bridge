@@ -9,8 +9,8 @@ from .daemon import invoke_mounted_daemon
 def queue_target(context: CliContext, command: ParsedQueueCommand) -> dict:
     return invoke_mounted_daemon(
         context,
-        allow_restart_stale=True,
-        request_fn=lambda client: client.queue(command.target),
+        allow_restart_stale=False,
+        request_fn=lambda client: client.queue(command.target, detail=command.detail),
     )
 
 

@@ -6,8 +6,11 @@ from pathlib import Path
 import pytest
 
 from ccbd.services.project_namespace_runtime.backend import (
+    create_window,
     create_session,
     ensure_server_policy,
+    ensure_window,
+    find_window,
     list_windows,
     prepare_server,
     session_alive,
@@ -124,6 +127,15 @@ def test_prepare_server_then_create_session_and_server_policy_retry_transient_tm
     ) == 2
 
 
+def test_prepare_server_accepts_fast_probe_timeout(monkeypatch) -> None:
+    monkeypatch.setenv('CCB_TMUX_OBJECT_READY_POLL_INTERVAL_S', '0')
+    backend = _FlakyBackend()
+
+    prepare_server(backend, timeout_s=0.0)
+
+    assert backend.calls == [('start-server',)]
+
+
 def test_prepare_server_does_not_require_server_policy_before_session_exists(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv('CCB_TMUX_OBJECT_READY_POLL_INTERVAL_S', '0')
     backend = _FlakyBackend()
@@ -196,6 +208,48 @@ def test_wait_for_root_pane_raises_transient_unavailable_for_fast_probe(monkeypa
         wait_for_root_pane(backend, target_window='ccb-proj:workspace', timeout_s=0.0)
 
 
+def test_find_window_uses_fast_probe_timeout_when_provided(monkeypatch) -> None:
+    monkeypatch.setenv('CCB_TMUX_OBJECT_READY_POLL_INTERVAL_S', '0')
+    backend = _FlakyBackend()
+    backend.fail_once('list-windows', '-t', 'ccb-proj', '-F', '#{window_id}\t#{window_name}\t#{window_active}')
+
+    with pytest.raises(TmuxTransientServerUnavailable):
+        find_window(backend, session_name='ccb-proj', window_name='workspace', timeout_s=0.0)
+    assert backend.calls.count(('list-windows', '-t', 'ccb-proj', '-F', '#{window_id}\t#{window_name}\t#{window_active}')) == 1
+
+
+def test_create_window_uses_fast_probe_timeout_when_provided(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv('CCB_TMUX_OBJECT_READY_POLL_INTERVAL_S', '0')
+    backend = _FlakyBackend()
+    backend.fail_once('list-windows', '-t', 'ccb-proj', '-F', '#{window_id}\t#{window_name}\t#{window_active}')
+
+    record = create_window(
+        backend,
+        session_name='ccb-proj',
+        window_name='workspace',
+        project_root=tmp_path,
+        timeout_s=0.0,
+    )
+    assert record.window_name == 'workspace'
+    assert backend.calls.count(('list-windows', '-t', 'ccb-proj', '-F', '#{window_id}\t#{window_name}\t#{window_active}')) == 2
+
+
+def test_ensure_window_uses_fast_probe_timeout_when_provided(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv('CCB_TMUX_OBJECT_READY_POLL_INTERVAL_S', '0')
+    backend = _FlakyBackend()
+    backend.fail_once('list-windows', '-t', 'ccb-proj', '-F', '#{window_id}\t#{window_name}\t#{window_active}')
+
+    with pytest.raises(TmuxTransientServerUnavailable):
+        ensure_window(
+            backend,
+            session_name='ccb-proj',
+            window_name='workspace',
+            project_root=tmp_path,
+            timeout_s=0.0,
+        )
+    assert backend.calls.count(('list-windows', '-t', 'ccb-proj', '-F', '#{window_id}\t#{window_name}\t#{window_active}')) == 1
+
+
 def test_create_session_uses_terminal_size_hint_when_provided(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv('CCB_TMUX_OBJECT_READY_POLL_INTERVAL_S', '0')
     backend = _FlakyBackend()
@@ -227,3 +281,38 @@ def test_create_session_uses_terminal_size_hint_when_provided(monkeypatch, tmp_p
             'while :; do sleep 3600; done',
         )
     ]
+
+
+def test_create_session_accepts_fast_probe_timeout(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv('CCB_TMUX_OBJECT_READY_POLL_INTERVAL_S', '0')
+    backend = _FlakyBackend()
+
+    create_session(
+        backend,
+        session_name='ccb-proj',
+        project_root=tmp_path,
+        window_name='cmd',
+        timeout_s=0.0,
+    )
+
+    assert backend.calls[0][:2] == ('new-session', '-d')
+
+
+def test_ensure_server_policy_accepts_fast_probe_timeout(monkeypatch) -> None:
+    monkeypatch.setenv('CCB_TMUX_OBJECT_READY_POLL_INTERVAL_S', '0')
+    backend = _FlakyBackend()
+
+    ensure_server_policy(backend, timeout_s=0.0)
+
+    assert backend.calls == [('set-option', '-g', 'destroy-unattached', 'off')]
+
+
+def test_kill_window_accepts_fast_probe_timeout(monkeypatch) -> None:
+    monkeypatch.setenv('CCB_TMUX_OBJECT_READY_POLL_INTERVAL_S', '0')
+    backend = _FlakyBackend()
+
+    from ccbd.services.project_namespace_runtime.backend import kill_window
+
+    kill_window(backend, target='ccb-proj:@1', timeout_s=0.0)
+
+    assert backend.calls == [('kill-window', '-t', 'ccb-proj:@1')]

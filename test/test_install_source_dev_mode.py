@@ -42,7 +42,7 @@ def _run_source_dev_snippet(tmp_path: Path, shell_body: str) -> subprocess.Compl
     )
 
 
-def test_source_dev_install_links_live_bin_and_codex_skill_assets(tmp_path: Path) -> None:
+def test_source_dev_install_links_live_bin_and_ask_skill_asset(tmp_path: Path) -> None:
     completed = _run_source_dev_snippet(
         tmp_path,
         """
@@ -65,10 +65,8 @@ def test_source_dev_install_links_live_bin_and_codex_skill_assets(tmp_path: Path
     assert ask_skill_md.is_symlink()
     assert ask_skill_md.resolve() == REPO_ROOT / "codex_skills" / "ask" / "SKILL.md"
 
-    readme_path = tmp_path / "codex-home" / "skills" / "all-plan" / "README.md"
-    assert readme_path.is_symlink()
-    assert readme_path.resolve() == REPO_ROOT / "codex_skills" / "all-plan" / "README.md"
-
-    references_path = tmp_path / "codex-home" / "skills" / "all-plan" / "references"
-    assert references_path.is_symlink()
-    assert references_path.resolve() == REPO_ROOT / "codex_skills" / "all-plan" / "references"
+    skills_dir = tmp_path / "codex-home" / "skills"
+    assert not (skills_dir / "all-plan").exists()
+    assert not (skills_dir / "ping").exists()
+    assert not (skills_dir / "pend").exists()
+    assert not (skills_dir / "file-op").exists()

@@ -38,6 +38,7 @@ def build_ccbd_payload(
     namespace_summary: dict,
     namespace_event_summary: dict,
     start_policy_summary: dict,
+    control_plane_metrics=None,
 ) -> dict:
     identity = project_config_identity_payload(config)
     socket_path = inspection.socket_path if hasattr(inspection, 'socket_path') else None
@@ -71,6 +72,11 @@ def build_ccbd_payload(
             'startup_deadline_at': str(getattr(inspection, 'startup_deadline_at', '') or '').strip() or None,
             'last_failure_reason': str(getattr(inspection, 'last_failure_reason', '') or '').strip() or None,
             'shutdown_intent': str(getattr(inspection, 'shutdown_intent', '') or '').strip() or None,
+            'last_request_queue_wait_s': getattr(control_plane_metrics, 'last_request_queue_wait_s', None),
+            'last_submit_duration_s': getattr(control_plane_metrics, 'last_submit_duration_s', None),
+            'last_ping_duration_s': getattr(control_plane_metrics, 'last_ping_duration_s', None),
+            'last_maintenance_duration_s': getattr(control_plane_metrics, 'last_maintenance_duration_s', None),
+            'pending_maintenance_ticks': getattr(control_plane_metrics, 'pending_maintenance_ticks', None),
             **execution_summary,
             **restore_summary,
         },

@@ -56,6 +56,11 @@ def render_doctor(payload: Mapping[str, object]) -> tuple[str, ...]:
         f'ccbd_heartbeat_fresh: {ccbd["heartbeat_fresh"]}',
         f'ccbd_takeover_allowed: {ccbd["takeover_allowed"]}',
         f'ccbd_reason: {ccbd["reason"]}',
+        f'ccbd_last_request_queue_wait_s: {ccbd.get("last_request_queue_wait_s")}',
+        f'ccbd_last_submit_duration_s: {ccbd.get("last_submit_duration_s")}',
+        f'ccbd_last_ping_duration_s: {ccbd.get("last_ping_duration_s")}',
+        f'ccbd_last_maintenance_duration_s: {ccbd.get("last_maintenance_duration_s")}',
+        f'ccbd_pending_maintenance_ticks: {ccbd.get("pending_maintenance_ticks")}',
         f'ccbd_active_execution_count: {ccbd["active_execution_count"]}',
         f'ccbd_recoverable_execution_count: {ccbd["recoverable_execution_count"]}',
         f'ccbd_nonrecoverable_execution_count: {ccbd["nonrecoverable_execution_count"]}',
@@ -138,6 +143,35 @@ def render_doctor(payload: Mapping[str, object]) -> tuple[str, ...]:
             f'restore: supported={agent["execution_resume_supported"]} mode={agent["execution_restore_mode"]} reason={agent["execution_restore_reason"]}'
         )
         lines.append(f'restore_detail: {agent["execution_restore_detail"]}')
+        lines.append(
+            'mailbox_summary: '
+            f'version={agent.get("mailbox_summary_version")} '
+            f'source={agent.get("mailbox_summary_source")} '
+            f'refreshed_at={agent.get("mailbox_summary_refreshed_at")} '
+            f'state={agent.get("mailbox_state")} '
+            f'queue={agent.get("mailbox_queue_depth")} '
+            f'pending_reply={agent.get("mailbox_pending_reply_count")} '
+            f'active={agent.get("mailbox_active_inbound_event_id")} '
+            f'head={agent.get("mailbox_head_inbound_event_id")} '
+            f'head_type={agent.get("mailbox_head_event_type")} '
+            f'head_status={agent.get("mailbox_head_status")}'
+        )
+        projected = agent.get('mailbox_consistency_projected') or {}
+        mismatches = agent.get('mailbox_consistency_mismatches') or ()
+        lines.append(
+            'mailbox_consistency: '
+            f'status={agent.get("mailbox_consistency_status")} '
+            f'mismatches={",".join(str(item) for item in mismatches) or "none"} '
+            f'projected_state={projected.get("mailbox_state")} '
+            f'projected_queue={projected.get("queue_depth")} '
+            f'projected_pending_reply={projected.get("pending_reply_count")} '
+            f'projected_active={projected.get("active_inbound_event_id")} '
+            f'projected_head={projected.get("head_inbound_event_id")} '
+            f'projected_head_type={projected.get("head_event_type")} '
+            f'projected_head_status={projected.get("head_status")}'
+        )
+        if agent.get('mailbox_consistency_error'):
+            lines.append(f'mailbox_consistency_error: {agent.get("mailbox_consistency_error")}')
         if agent.get("session_switch_state"):
             lines.append(
                 'session_switch: '
@@ -150,4 +184,55 @@ def render_doctor(payload: Mapping[str, object]) -> tuple[str, ...]:
     return tuple(lines)
 
 
-__all__ = ['render_doctor']
+def render_doctor_storage(payload: Mapping[str, object]) -> tuple[str, ...]:
+    lines = [
+        'storage_status: ok',
+        f'storage_schema_version: {payload.get("schema_version")}',
+        f'project: {payload.get("project")}',
+        f'project_id: {payload.get("project_id")}',
+        f'storage_runtime_root_kind: {payload.get("runtime_root_kind")}',
+        f'storage_runtime_state_root: {payload.get("runtime_state_root")}',
+        f'storage_shared_cache_root: {payload.get("shared_cache_root") or ""}',
+        f'storage_shared_cache_root_usable: {payload.get("shared_cache_root_usable", False)}',
+        f'storage_shared_cache_status: {payload.get("shared_cache_status")}',
+        f'storage_shared_cache_reason: {payload.get("shared_cache_reason")}',
+        f'storage_total_bytes: {payload.get("total_bytes")}',
+        f'storage_total_count: {payload.get("total_count")}',
+    ]
+    for storage_class, summary in sorted((payload.get('by_class') or {}).items()):
+        lines.append(
+            'storage_class: '
+            f'class={storage_class} '
+            f'bytes={summary.get("bytes")} '
+            f'count={summary.get("count")}'
+        )
+    for provider, summary in sorted((payload.get('by_provider') or {}).items()):
+        lines.append(
+            'storage_provider: '
+            f'provider={provider} '
+            f'bytes={summary.get("bytes")} '
+            f'count={summary.get("count")}'
+        )
+    for agent, summary in sorted((payload.get('by_agent') or {}).items()):
+        lines.append(
+            'storage_agent: '
+            f'agent={agent} '
+            f'bytes={summary.get("bytes")} '
+            f'count={summary.get("count")}'
+        )
+    for entry in (payload.get('entries') or ())[:50]:
+        lines.append(
+            'storage_entry: '
+            f'class={entry.get("storage_class")} '
+            f'provider={entry.get("provider")} '
+            f'agent={entry.get("agent")} '
+            f'bytes={entry.get("size_bytes")} '
+            f'active={entry.get("active")} '
+            f'reclaimable={entry.get("reclaimable")} '
+            f'reason={entry.get("reason")} '
+            f'path={entry.get("relative_path")}'
+        )
+    return tuple(lines)
+
+
+__all__ = ['render_doctor', 'render_doctor_storage']

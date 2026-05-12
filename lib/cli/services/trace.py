@@ -9,7 +9,7 @@ from .daemon import invoke_mounted_daemon
 def trace_target(context: CliContext, command: ParsedTraceCommand) -> dict:
     return invoke_mounted_daemon(
         context,
-        allow_restart_stale=True,
+        allow_restart_stale=False,
         request_fn=lambda client: client.trace(command.target),
     )
 

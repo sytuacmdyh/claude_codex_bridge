@@ -47,6 +47,11 @@ def ping_target(context: CliContext, command: ParsedPingCommand) -> dict:
                 'startup_deadline_at': local.startup_deadline_at,
                 'last_failure_reason': local.last_failure_reason,
                 'shutdown_intent': local.shutdown_intent,
+                'last_request_queue_wait_s': None,
+                'last_submit_duration_s': None,
+                'last_ping_duration_s': None,
+                'last_maintenance_duration_s': None,
+                'pending_maintenance_ticks': None,
             }
         return {
             'project_id': local.project_id,
@@ -57,7 +62,7 @@ def ping_target(context: CliContext, command: ParsedPingCommand) -> dict:
             'health': 'unmounted',
             'diagnostics': {'reason': local.reason},
         }
-    handle = connect_mounted_daemon(context, allow_restart_stale=True)
+    handle = connect_mounted_daemon(context, allow_restart_stale=(target == 'ccbd'))
     assert handle.client is not None
     payload = handle.client.ping(target)
     if target == 'ccbd':

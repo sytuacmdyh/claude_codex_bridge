@@ -16,8 +16,8 @@ class DispatcherFacadeMixin:
     def watch(self, target: str, *, start_line: int = 0) -> dict:
         return build_watch_payload(self, target, start_line=start_line)
 
-    def queue(self, target: str = 'all') -> dict:
-        payload = self._message_bureau_control.queue_summary(target)
+    def queue(self, target: str = 'all', *, detail: bool | None = None) -> dict:
+        payload = self._message_bureau_control.queue_summary(target, detail=detail)
         if payload.get('target') == 'all':
             payload = dict(payload)
             payload['agents'] = [self._queue_agent_with_runtime(agent) for agent in payload.get('agents') or ()]
@@ -37,8 +37,11 @@ class DispatcherFacadeMixin:
     def retry(self, target: str) -> dict:
         return retry_attempt(self, target)
 
-    def inbox(self, agent_name: str) -> dict:
-        return self._message_bureau_control.inbox(agent_name)
+    def inbox(self, agent_name: str, *, detail: bool | None = None) -> dict:
+        return self._message_bureau_control.inbox(agent_name, detail=detail)
+
+    def mailbox_head(self, agent_name: str) -> dict:
+        return self._message_bureau_control.mailbox_head(agent_name)
 
     def ack_reply(self, agent_name: str, inbound_event_id: str | None = None) -> dict:
         return self._message_bureau_control.ack_reply(agent_name, inbound_event_id)

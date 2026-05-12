@@ -43,9 +43,27 @@ def _is_start_help(tokens: list[str]) -> bool:
 
 def _command_help_name(tokens: list[str]) -> str | None:
     visible = _strip_global_project_tokens(tokens)
-    if len(visible) == 2 and visible[1] in {"-h", "--help"}:
+    if not visible:
+        return None
+    help_tokens = {"-h", "--help", "help"}
+    if not any(token in help_tokens for token in visible[1:]):
+        return None
+    if len(visible) >= 2 and visible[1] in help_tokens:
         return visible[0]
-    return None
+    if len(visible) >= 2:
+        if visible[0] == "doctor" and visible[1] in {"ps", "--runtime"}:
+            return "doctor-ps"
+        if visible[0] == "doctor" and visible[1] in {"logs", "--logs"}:
+            return "doctor-logs"
+        if visible[0] == "doctor" and visible[1] == "storage":
+            return "doctor-storage"
+        if visible[0] == "repair" and visible[1] == "ack":
+            return "repair-ack"
+        if visible[0] == "repair" and visible[1] == "retry":
+            return "repair-retry"
+        if visible[0] == "repair" and visible[1] == "resubmit":
+            return "repair-resubmit"
+    return visible[0]
 
 
 def _strip_global_project_tokens(tokens: list[str]) -> list[str]:
@@ -98,7 +116,7 @@ def _handle_removed_commands(tokens: list[str], *, stderr: TextIO) -> int | None
         return _write_removed_command_error(
             stderr,
             command=tokens[0],
-            guidance="💡 Use `ccb ask`, `ccb ping`, `ccb pend`, `ccb ps`, `ccb logs`, or `ccb doctor`.",
+            guidance="💡 Use `ccb ask` for task submission/results, `ccb doctor` for diagnostics, and `ccb trace` for lineage details.",
         )
     return None
 

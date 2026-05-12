@@ -50,6 +50,20 @@ def _wait_for_pid_exit(pid: int, *, timeout_s: float = 3.0) -> None:
     raise AssertionError(f'pid {pid} did not exit within {timeout_s}s')
 
 
+def _wait_for_lifecycle(path: Path, *, desired_state: str, phase: str, timeout_s: float = 3.0) -> dict[str, object]:
+    deadline = time.time() + timeout_s
+    last: dict[str, object] | None = None
+    while time.time() < deadline:
+        try:
+            last = json.loads(path.read_text(encoding='utf-8'))
+        except Exception:
+            last = None
+        if last is not None and last.get('desired_state') == desired_state and last.get('phase') == phase:
+            return last
+        time.sleep(0.05)
+    raise AssertionError(f'expected lifecycle desired={desired_state!r} phase={phase!r}; last={last!r}')
+
+
 def test_phase2_start_initializes_empty_existing_anchor(monkeypatch, tmp_path: Path) -> None:
     project_root = tmp_path / 'repo-empty-anchor'
     (project_root / '.ccb').mkdir(parents=True)
@@ -162,6 +176,6 @@ def test_ccb_start_restarts_dead_daemon_on_subsequent_start(tmp_path: Path) -> N
 
     kill = _run_ccb(['kill', '-f'], cwd=project_root)
     assert kill.returncode == 0, kill.stderr
-    lifecycle_killed = json.loads(lifecycle_path.read_text(encoding='utf-8'))
+    lifecycle_killed = _wait_for_lifecycle(lifecycle_path, desired_state='stopped', phase='unmounted')
     assert lifecycle_killed['desired_state'] == 'stopped'
     assert lifecycle_killed['phase'] == 'unmounted'

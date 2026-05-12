@@ -27,8 +27,11 @@ def _payload_watch(target: str, *, cursor: int = 0) -> dict:
     return {'target': target, 'cursor': cursor}
 
 
-def _payload_queue(target: str = 'all') -> dict:
-    return {'target': target}
+def _payload_queue(target: str = 'all', *, detail: bool | None = None) -> dict:
+    payload = {'target': target}
+    if detail is not None:
+        payload['detail'] = bool(detail)
+    return payload
 
 
 def _payload_trace(target: str) -> dict:
@@ -43,7 +46,14 @@ def _payload_retry(target: str) -> dict:
     return {'target': target}
 
 
-def _payload_inbox(agent_name: str) -> dict:
+def _payload_inbox(agent_name: str, *, detail: bool | None = None) -> dict:
+    payload = {'agent_name': agent_name}
+    if detail is not None:
+        payload['detail'] = bool(detail)
+    return payload
+
+
+def _payload_mailbox_head(agent_name: str) -> dict:
     return {'agent_name': agent_name}
 
 
@@ -151,6 +161,7 @@ client_endpoints = {
     'resubmit': ('resubmit', _payload_resubmit),
     'retry': ('retry', _payload_retry),
     'inbox': ('inbox', _payload_inbox),
+    'mailbox_head': ('mailbox_head', _payload_mailbox_head),
     'ack': ('ack', _payload_ack),
     'cancel': ('cancel', _payload_cancel),
     'start': ('start', _payload_start),

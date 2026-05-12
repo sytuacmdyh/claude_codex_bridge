@@ -100,40 +100,22 @@ def test_submit_ask_maps_broadcast_payload_and_submission(monkeypatch: pytest.Mo
     }
 
 
-def test_submit_ask_preserves_explicit_cmd_sender(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_submit_ask_rejects_explicit_cmd_sender(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     project_root = tmp_path / 'repo-ask-explicit-cmd'
     project_root.mkdir()
     context = _build_context(project_root)
-    captured: dict[str, object] = {}
-
-    class _FakeClient:
-        def submit(self, envelope) -> dict:
-            captured['from_actor'] = envelope.from_actor
-            return {
-                'job_id': 'job_1',
-                'agent_name': 'agent1',
-                'target_kind': 'agent',
-                'target_name': 'agent1',
-                'status': 'accepted',
-            }
 
     monkeypatch.setattr(
         ask_service,
         'load_project_config',
-        lambda project_root: SimpleNamespace(config=SimpleNamespace(agents={'agent1': {}, 'agent2': {}}, cmd_enabled=True)),
-    )
-    monkeypatch.setattr(
-        ask_service,
-        'invoke_mounted_daemon',
-        lambda context, allow_restart_stale, request_fn: request_fn(_FakeClient()),
+        lambda project_root: SimpleNamespace(config=SimpleNamespace(agents={'agent1': {}, 'agent2': {}})),
     )
 
-    ask_service.submit_ask(
-        context,
-        ParsedAskCommand(project=None, target='agent1', sender='cmd', message='hello'),
-    )
-
-    assert captured['from_actor'] == 'cmd'
+    with pytest.raises(ValueError, match='unknown sender agent: cmd'):
+        ask_service.submit_ask(
+            context,
+            ParsedAskCommand(project=None, target='agent1', sender='cmd', message='hello'),
+        )
 
 
 def test_submit_ask_translates_client_reset_during_shutdown(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -172,7 +154,7 @@ def test_submit_ask_translates_client_reset_during_shutdown(monkeypatch: pytest.
         )
 
 
-def test_resolve_ask_sender_defaults_to_cmd_for_project_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_resolve_ask_sender_defaults_to_user_for_project_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     project_root = tmp_path / 'repo-ask-default-cmd'
     project_root.mkdir()
     context = _build_context(project_root)
@@ -180,7 +162,7 @@ def test_resolve_ask_sender_defaults_to_cmd_for_project_root(monkeypatch: pytest
     for env_name in ('CCB_CALLER_ACTOR', 'CCB_CALLER_RUNTIME_DIR', 'CODEX_RUNTIME_DIR', 'CCB_SESSION_ID'):
         monkeypatch.delenv(env_name, raising=False)
 
-    assert ask_service.resolve_ask_sender(context, None) == 'cmd'
+    assert ask_service.resolve_ask_sender(context, None) == 'user'
 
 
 def test_resolve_ask_sender_prefers_runtime_dir_actor(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -276,8 +258,13 @@ def test_watch_ask_job_reconnects_and_preserves_cursor(monkeypatch: pytest.Monke
     flaky = _FlakyClient()
     stable = _StableClient()
     handles = iter([SimpleNamespace(client=flaky), SimpleNamespace(client=stable)])
+    seen: list[bool] = []
 
-    monkeypatch.setattr(ask_service, 'connect_mounted_daemon', lambda context, allow_restart_stale: next(handles))
+    def _connect(context, allow_restart_stale):
+        seen.append(allow_restart_stale)
+        return next(handles)
+
+    monkeypatch.setattr(ask_service, 'connect_mounted_daemon', _connect)
     monkeypatch.setattr(ask_service, 'ask_wait_timeout_seconds', lambda: 1.0)
     monkeypatch.setattr(ask_service, 'ask_wait_poll_interval_seconds', lambda: 0.0)
     monkeypatch.setattr(ask_service, 'render_watch_batch', lambda batch: (f'{batch.job_id}:{batch.cursor}:{batch.terminal}',))
@@ -292,6 +279,7 @@ def test_watch_ask_job_reconnects_and_preserves_cursor(monkeypatch: pytest.Monke
     assert flaky.calls == [0, 2]
     assert stable.calls == [2]
     assert rendered == [('job_1:2:False',), ('job_1:4:True',)]
+    assert seen == [False, False]
 
 
 def test_watch_ask_job_times_out_after_reconnect_failures(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -305,10 +293,16 @@ def test_watch_ask_job_times_out_after_reconnect_failures(monkeypatch: pytest.Mo
             del job_id, cursor
             raise CcbdClientError('socket closed')
 
+    seen: list[bool] = []
+
+    def _connect(context, allow_restart_stale):
+        seen.append(allow_restart_stale)
+        return SimpleNamespace(client=_FlakyClient())
+
     monkeypatch.setattr(
         ask_service,
         'connect_mounted_daemon',
-        lambda context, allow_restart_stale: SimpleNamespace(client=_FlakyClient()),
+        _connect,
     )
     monkeypatch.setattr(ask_service, 'ask_wait_timeout_seconds', lambda: 1.0)
     monkeypatch.setattr(ask_service, 'ask_wait_poll_interval_seconds', lambda: 0.0)
@@ -319,6 +313,7 @@ def test_watch_ask_job_times_out_after_reconnect_failures(monkeypatch: pytest.Mo
         ask_service.watch_ask_job(context, 'job_1', StringIO(), timeout=None, emit_output=False)
 
     assert str(exc_info.value) == 'wait timed out for job_1'
+    assert seen == [False, False]
 
 
 def test_watch_ask_job_retries_when_reconnect_attempt_temporarily_fails(
@@ -361,9 +356,11 @@ def test_watch_ask_job_retries_when_reconnect_attempt_temporarily_fails(
     flaky = _FlakyClient()
     stable = _StableClient()
     connects = {'count': 0}
+    seen: list[bool] = []
 
     def _connect(context, allow_restart_stale):
-        del context, allow_restart_stale
+        del context
+        seen.append(allow_restart_stale)
         connects['count'] += 1
         if connects['count'] == 1:
             return SimpleNamespace(client=flaky)
@@ -383,6 +380,7 @@ def test_watch_ask_job_retries_when_reconnect_attempt_temporarily_fails(
     assert batch.reply == 'done'
     assert flaky.calls == [0]
     assert stable.calls == [0]
+    assert seen == [False, False, False]
 
 
 def test_write_ask_output_appends_newline(tmp_path: Path) -> None:

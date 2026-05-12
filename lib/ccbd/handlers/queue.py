@@ -6,6 +6,9 @@ def build_queue_handler(dispatcher):
         target = str(payload.get('target') or 'all').strip()
         if not target:
             raise ValueError('queue requires target')
-        return dispatcher.queue(target)
+        detail = payload.get('detail')
+        if detail is not None:
+            detail = bool(detail)
+        return dispatcher.queue(target, detail=detail)
 
     return handle

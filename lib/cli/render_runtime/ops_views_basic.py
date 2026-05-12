@@ -68,6 +68,34 @@ def render_doctor_bundle(summary) -> tuple[str, ...]:
     )
 
 
+def render_cleanup(summary) -> tuple[str, ...]:
+    lines = [
+        f'cleanup_status: {summary.status}',
+        f'project_root: {summary.project_root}',
+        f'project_id: {summary.project_id}',
+        f'cleanup_deleted_bytes: {summary.deleted_bytes}',
+        f'cleanup_deleted_count: {summary.deleted_count}',
+        f'cleanup_skipped_count: {summary.skipped_count}',
+    ]
+    for action in getattr(summary, 'actions', ()) or ():
+        lines.append(
+            'cleanup_action: '
+            f'provider={action.provider} '
+            f'kind={action.kind} '
+            f'bytes={action.bytes_removed} '
+            f'reason={action.reason} '
+            f'path={action.path}'
+        )
+    for skipped in getattr(summary, 'skipped', ()) or ():
+        lines.append(
+            'cleanup_skipped: '
+            f'provider={skipped.provider} '
+            f'reason={skipped.reason} '
+            f'path={skipped.path}'
+        )
+    return tuple(lines)
+
+
 def render_kill(summary) -> tuple[str, ...]:
     lines = [
         'kill_status: ok',
@@ -94,6 +122,7 @@ def render_ps(payload: Mapping[str, object]) -> tuple[str, ...]:
 
 
 __all__ = [
+    'render_cleanup',
     'render_config_validate',
     'render_doctor_bundle',
     'render_kill',

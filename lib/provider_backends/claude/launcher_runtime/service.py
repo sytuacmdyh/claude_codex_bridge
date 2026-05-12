@@ -15,6 +15,7 @@ from provider_core.contracts import ProviderRuntimeLauncher
 def build_runtime_launcher(
     *,
     prepare_runtime_fn,
+    prepare_launch_context_fn,
     build_start_cmd_fn,
     build_session_payload_fn,
     resolve_run_cwd_fn,
@@ -23,6 +24,7 @@ def build_runtime_launcher(
         provider='claude',
         launch_mode='simple_tmux',
         prepare_runtime=prepare_runtime_fn,
+        prepare_launch_context=prepare_launch_context_fn,
         build_start_cmd=build_start_cmd_fn,
         build_session_payload=build_session_payload_fn,
         resolve_run_cwd=resolve_run_cwd_fn,
@@ -32,6 +34,14 @@ def build_runtime_launcher(
 def prepare_runtime(runtime_dir: Path) -> dict[str, object]:
     runtime_dir.mkdir(parents=True, exist_ok=True)
     return {}
+
+
+def prepare_launch_context(context, spec, plan, runtime_dir: Path, prepared_state: dict[str, object]) -> dict[str, object]:
+    payload = dict(prepared_state or {})
+    payload['project_root'] = str(context.project.project_root)
+    payload['workspace_path'] = str(payload.get('run_cwd') or plan.workspace_path)
+    payload['agent_events_path'] = str(context.paths.agent_events_path(spec.name))
+    return payload
 
 
 def build_start_cmd(
@@ -48,7 +58,13 @@ def build_start_cmd(
     provider_start_parts_fn,
 ) -> str:
     profile = load_profile_fn(runtime_dir)
-    home_overrides = prepare_home_overrides_fn(runtime_dir, profile)
+    restore_target = resolve_restore_target_fn(spec=spec, runtime_dir=runtime_dir, restore=command.restore)
+    home_overrides = prepare_home_overrides_fn(
+        runtime_dir,
+        profile,
+        agent_name=spec.name,
+        workspace_path=restore_target.run_cwd,
+    )
     settings_path = write_settings_overlay_fn(runtime_dir, profile=profile)
     env_prefix = join_env_prefix(
         build_env_prefix_fn(profile=profile, extra_env=spec.env),
@@ -58,8 +74,6 @@ def build_start_cmd(
             caller_context_env(actor=spec.name, runtime_dir=runtime_dir, launch_session_id=launch_session_id)
         ),
     )
-    restore_target = resolve_restore_target_fn(spec=spec, runtime_dir=runtime_dir, restore=command.restore)
-
     cmd_parts = provider_start_parts_fn('claude')
     cmd_parts.extend(['--setting-sources', 'user,project,local'])
     if settings_path is not None:
@@ -81,7 +95,7 @@ def resolve_run_cwd(
     spec,
     plan,
     runtime_dir: Path,
-    launch_session_id: str,
+    launch_session_id: str | None,
     *,
     resolve_restore_target_fn,
 ) -> Path | str | None:

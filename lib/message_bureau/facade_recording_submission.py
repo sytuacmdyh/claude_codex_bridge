@@ -4,7 +4,7 @@ from ccbd.api_models import JobRecord, MessageEnvelope
 from mailbox_kernel import InboundEventRecord, InboundEventStatus, InboundEventType
 
 from .facade_recording_common import job_id_from_payload_ref, new_id
-from .facade_state import next_retry_index, refresh_mailbox, resolve_origin_message_id, set_message_state
+from .facade_state import next_retry_index, resolve_origin_message_id, set_message_state
 from .models import AttemptRecord, AttemptState, MessageRecord, MessageState
 
 
@@ -77,7 +77,11 @@ def record_submission(
                 created_at=accepted_at,
             )
         )
-        refresh_mailbox(service, job.agent_name, updated_at=accepted_at)
+        service._mailbox_kernel.apply_incremental_summary_update(
+            job.agent_name,
+            queue_delta=1,
+            updated_at=accepted_at,
+        )
     return message_id
 
 
@@ -124,8 +128,12 @@ def record_retry_attempt(service, message_id: str, job: JobRecord, *, accepted_a
             created_at=accepted_at,
         )
     )
+    service._mailbox_kernel.apply_incremental_summary_update(
+        job.agent_name,
+        queue_delta=1,
+        updated_at=accepted_at,
+    )
     set_message_state(service, message_id, MessageState.QUEUED, updated_at=accepted_at)
-    refresh_mailbox(service, job.agent_name, updated_at=accepted_at)
     return attempt_id
 
 

@@ -7,6 +7,7 @@ This document defines the non-drifting user-facing contract for project configur
 It is the authoritative design anchor for:
 
 - `.ccb/ccb.config`
+- `.ccb/ccb_memory.md` and `.ccb/agents/<agent>/memory.md` project memory placement
 - compact layout grammar
 - global and built-in default config fallback
 - pane naming and pane color identity
@@ -20,6 +21,34 @@ It is the authoritative design anchor for:
 - When both project and global config are absent, config loading must use the built-in default project config from code and report the source as `<default>`.
 - User help text, validation output, diagnostics, and docs must point to `.ccb/ccb.config`.
 - `.ccb/config.yaml` is not part of the contract and must not be read or written by current code.
+
+### 2.1 Project Shared Memory Files
+
+Project memory files are user context, not startup/layout authority.
+
+- `.ccb/ccb_memory.md` under the project anchor is the shared CCB project memory file.
+  - Startup may create it only when missing.
+  - Startup must not overwrite user edits.
+  - Teams may whitelist and commit it when they want shared agent collaboration rules.
+- `.ccb/agents/<agent>/memory.md` is optional agent-private memory.
+  - It is user-editable local data and must not be deleted or rewritten by
+    normal startup.
+  - `<agent>` is the normalized logical agent name from `.ccb/ccb.config`.
+  - This path is anchored under the project `.ccb/` directory and does not move
+    with relocated runtime state.
+- Generated project-memory metadata and runtime bundles are CCB-owned state:
+  - `<runtime_state_root>/state/memory.seed.json` records template seed
+    metadata for the initial `.ccb/ccb_memory.md`.
+  - `<runtime_state_root>/runtime/memory/<agent>.md` is generated runtime
+    memory for providers that need a stable file path.
+  - `project_root/.ccb/runtime/memory/<agent>.md` may be generated as a
+    provider compatibility bridge for tools such as OpenCode that consume
+    project-relative instruction paths.
+- When runtime state is relocated, user-editable memory remains under the
+  project anchor while generated runtime memory follows `runtime_state_root`.
+- `.ccb/` is local/runtime state by default. Projects that want to commit
+  selected files such as `.ccb/ccb.config` must opt in with their own
+  `.gitignore` whitelist.
 
 ## 3. Compact Layout Grammar
 
@@ -171,6 +200,17 @@ Contract:
 - Config rendering and recovery must preserve the user-facing `model` field
   instead of expanding it into provider-specific `startup_args`.
 
+### 4.4 Workspace Mode Semantics
+
+- `workspace_mode = "inplace"` means the agent uses the project root directly.
+- `workspace_mode = "git-worktree"` means the project root must be a valid git
+  repository and startup must materialize a real `git worktree`.
+- `git-worktree` must not silently fall back to copying the project directory
+  when the project root is not a git repository. Startup must fail with an
+  actionable error instead.
+- `workspace_mode = "copy"` is the only mode that may create an explicit
+  directory copy of the project tree.
+
 ## 5. Default Layout Contract
 
 Bootstrap must generate a balanced two-column layout over all visible panes.
@@ -198,6 +238,7 @@ General rule:
 - Pane pruning must never silently reorder agents.
 - Incremental in-place splitting on top of an already materialized project namespace is not a valid way to realize a different visible layout signature.
 - When the desired visible layout signature changes, startup must recreate the project namespace before rematerializing tmux panes.
+- During layout materialization, newly split panes must be created with a silent placeholder command in the initial `split-window` call, not as empty panes that are later respawned. Once assigned to a provider leaf, panes must keep using the normal managed respawn path so provider shell, stderr-log, and `remain-on-exit` semantics are preserved.
 
 ## 7. Pane Presentation Contract
 
@@ -228,5 +269,7 @@ General rule:
 ## 9. Update Discipline
 
 - If `.ccb/ccb.config` grammar changes, update this document in the same patch.
+- If project memory file placement or generated memory path semantics change,
+  update this document in the same patch.
 - If bootstrap layout defaults change, update this document in the same patch.
 - If pane naming, split sizing, or pane theming rules change materially, update this document in the same patch.

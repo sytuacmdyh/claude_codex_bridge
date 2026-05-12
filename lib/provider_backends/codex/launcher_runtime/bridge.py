@@ -14,14 +14,13 @@ from .session_paths import session_file_for_runtime_dir
 
 def post_launch(backend: object, pane_id: str, runtime_dir: Path, launch_session_id: str, prepared_state: dict[str, object]) -> None:
     del launch_session_id
-    del prepared_state
     artifacts = codex_runtime_artifact_layout(runtime_dir)
     write_pane_pid(backend, pane_id, artifacts.codex_pid)
-    spawn_codex_bridge(runtime_dir=runtime_dir, pane_id=pane_id)
+    spawn_codex_bridge(runtime_dir=runtime_dir, pane_id=pane_id, prepared_state=prepared_state)
     validate_bridge_bootstrap(runtime_dir)
 
 
-def spawn_codex_bridge(*, runtime_dir: Path, pane_id: str) -> None:
+def spawn_codex_bridge(*, runtime_dir: Path, pane_id: str, prepared_state: dict[str, object] | None = None) -> None:
     artifacts = codex_runtime_artifact_layout(runtime_dir)
     env = os.environ.copy()
     env['CODEX_TERMINAL'] = 'tmux'
@@ -30,7 +29,7 @@ def spawn_codex_bridge(*, runtime_dir: Path, pane_id: str) -> None:
     env['CODEX_INPUT_FIFO'] = str(artifacts.input_fifo)
     env['CODEX_OUTPUT_FIFO'] = str(artifacts.output_fifo)
     env['CODEX_TMUX_LOG'] = str(artifacts.bridge_log)
-    env.update(bridge_runtime_env(runtime_dir))
+    env.update(bridge_runtime_env(runtime_dir, prepared_state=prepared_state))
     existing_pythonpath = env.get('PYTHONPATH', '')
     lib_root = str(Path(__file__).resolve().parents[3])
     env['PYTHONPATH'] = lib_root if not existing_pythonpath else lib_root + os.pathsep + existing_pythonpath
@@ -45,13 +44,20 @@ def spawn_codex_bridge(*, runtime_dir: Path, pane_id: str) -> None:
     artifacts.bridge_pid.write_text(f'{proc.pid}\n', encoding='utf-8')
 
 
-def bridge_runtime_env(runtime_dir: Path) -> dict[str, str]:
+def bridge_runtime_env(runtime_dir: Path, *, prepared_state: dict[str, object] | None = None) -> dict[str, str]:
+    del prepared_state
     env: dict[str, str] = {}
     session_file = session_file_for_runtime_dir(runtime_dir)
     if session_file is not None:
         env['CCB_SESSION_FILE'] = str(session_file)
     profile = load_resolved_provider_profile(runtime_dir)
-    env.update(prepare_codex_home_overrides(runtime_dir, profile))
+    env.update(
+        prepare_codex_home_overrides(
+            runtime_dir,
+            profile,
+            refresh_home=False,
+        )
+    )
     return env
 
 

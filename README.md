@@ -7,7 +7,7 @@
   <img src="https://img.shields.io/badge/Every_Model_Controllable-CF1322?style=for-the-badge" alt="Every Model Controllable">
 </p>
 
-[![Version](https://img.shields.io/badge/version-6.0.29-orange.svg)]()
+[![Version](https://img.shields.io/badge/version-6.1.7-orange.svg)]()
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey.svg)]()
 
 **English** | [Chinese](README_zh.md)
@@ -74,10 +74,9 @@ Build project-local teams with roles, pane layout, provider state, worktree isol
 <details>
 <summary><b>Latest release highlights</b></summary>
 
-- **WSL Runtime State Relocated**: on mounted-drive WSL projects, project authority stays under `.ccb` while `ccbd` and agent runtime state move to a local Linux state root with explicit runtime-root markers and diagnostics mapping.
-- **Provider Lookup and Ask Routing Stay Stable**: relocated runtime directories still resolve back to the project anchor for session discovery and ask sender attribution.
-- **Control-plane sockets remain resilient**: slow clients no longer block new probes, and transient connect races are retried inside the existing timeout budget.
-- **README stays aligned with the current release**: install, config, update, and delegation guidance continue to match the current CLI surface.
+- **Codex shared memory refresh is fixed**: when `.ccb/ccb_memory.md` changes, managed Codex startup avoids stale `resume` context and loads the refreshed project memory.
+- **Ask skill submit is stricter**: Claude and Droid ask skills use heredoc-only submission and stop immediately after submit instead of polling for replies.
+- **Project memory has one anchor**: `.ccb/ccb_memory.md` is the project-wide shared memory document for every managed agent.
 
 See [Release Notes](#release-notes) for the full history.
 
@@ -100,6 +99,8 @@ Tmux copy/paste: drag with the left mouse button to copy, and use `Ctrl+Shift+V`
 ## Config Control
 
 `ccb` is controlled by `.ccb/ccb.config`. This file is project-local and user-authored; if it is missing, CCB falls back to `~/.ccb/ccb.config` when present, then to the built-in default without writing a new config file.
+
+`.ccb/ccb_memory.md` is the project-wide shared memory document.
 
 <details>
 <summary><b>Layout</b></summary>
@@ -206,7 +207,7 @@ ccb reinstall           # Clean then reinstall ccb
    Use this path when `ccb` and your agent CLIs run in the same Unix-like shell.
 
 ```bash
-git clone https://github.com/bfly123/claude_codex_bridge.git
+git clone https://github.com/SeemSeam/claude_codex_bridge.git
 cd claude_codex_bridge
 ./install.sh install
 ```
@@ -215,7 +216,7 @@ cd claude_codex_bridge
    Use this path when your agent CLIs run natively on Windows.
 
 ```powershell
-git clone https://github.com/bfly123/claude_codex_bridge.git
+git clone https://github.com/SeemSeam/claude_codex_bridge.git
 cd claude_codex_bridge
 powershell -ExecutionPolicy Bypass -File .\install.ps1 install
 ```
@@ -232,6 +233,10 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1 install
 </details>
 
 Install note: the commands above install from a git checkout today. After that, run `ccb update` to download the latest stable GitHub release asset and complete the managed release upgrade automatically.
+
+## Development Tools
+
+Maintainer-only release and repository tools live under `dev_tools/`. They are versioned in git but excluded from official release artifacts.
 
 ## How to Use
 
@@ -282,7 +287,7 @@ ccb reinstall
 Thanks to the [Linux.do community](https://linux.do) for testing, feedback, and discussion support.
 
 <div align="center">
-<img src="assets/weixin.png" alt="WeChat Group" width="300">
+<img src="assets/weixin.jpg" alt="WeChat Group" width="300">
 </div>
 
 ---
@@ -293,11 +298,75 @@ Thanks to the [Linux.do community](https://linux.do) for testing, feedback, and 
 Historical note: older release notes below may mention `askd`, legacy flags, or removed commands. Those references are kept only as changelog history and do not redefine the current CLI surface.
 
 <details open>
+<summary><b>v6.1.7</b> - Codex Memory Freshness Hotfix</summary>
+
+- Codex now refreshes shared project memory instead of resuming stale AGENTS context after `.ccb/ccb_memory.md` changes.
+- Claude and Droid ask skills now submit through heredoc and stop immediately after submit.
+
+</details>
+
+<details>
+<summary><b>v6.1.6</b> - Startup And Claude Auth Hotfix</summary>
+
+- Fixes a first-start race between ccbd start and heartbeat maintenance.
+- `.ccb/ccb_memory.md` is the only shared CCB memory anchor.
+- Adds Claude macOS `Claude Code-credentials` Keychain lookup.
+
+</details>
+
+<details>
+<summary><b>v6.1.5</b> - Tmux Startup Hotfix</summary>
+
+- Fixes startup races that could show `Cannot split: pane ... does not exist` or `respawn pane failed: can't find pane`.
+- Provider panes still use the managed respawn path.
+
+</details>
+
+<details>
+<summary><b>v6.1.4</b> - Shared Project Memory V1</summary>
+
+- `.ccb/ccb_memory.md` is the project-wide shared memory document.
+
+</details>
+
+<details>
+<summary><b>v6.1.2</b> - Provider Storage Boundary Hardening</summary>
+
+- **Storage Classes Made Explicit**: `ccb doctor storage` now separates authority, session state, secrets, workspaces, user content, projected config, rebuildable cache, and startup authority bundles.
+- **Safe Cleanup Added**: `ccb cleanup` refuses to run while `ccbd` or ask jobs are active, prunes only safe rebuildable provider caches, and preserves sessions, auth, and current Claude binaries.
+- **Shared Cache Guardrails Added**: future provider shared-cache paths now resolve under the effective runtime-state root with WSL drvfs safety checks and manifest creation.
+
+</details>
+
+<details>
+<summary><b>v6.1.1</b> - Ask Skill and Memory Injection Cleanup</summary>
+
+- **Ask Skill Kept as the Only Installed Skill**: Claude, Codex, and Droid/Factory installs now publish only the `ask` skill and remove older CCB helper skills such as `ping`, `pend`, `all-plan`, and `file-op`.
+- **Global Memory Injection Removed**: installers no longer append CCB collaboration blocks into global `CLAUDE.md`, installed `AGENTS.md`, or `.clinerules`; existing CCB-marked blocks are cleaned during install.
+- **Legacy Skill Sources Removed**: repository skill templates now keep only the provider-specific `ask` skill assets.
+
+</details>
+
+<details>
+<summary><b>v6.1.0</b> - CCBD Ask Stability and Observer Convergence</summary>
+
+- **Ask Submit Fastpath Stabilized**: `ccb ask` returns bounded receipts without waiting on provider readiness, mailbox history projection, or long maintenance ticks
+- **Lifecycle and Shutdown Races Closed**: stop-all, shutdown, restart, and background supervision now keep stopped runtimes and terminal jobs from being revived by stale work
+- **Provider Completion Recovery Hardened**: Codex polling follows rebound session bindings after restart so jobs complete from the current managed session log
+- **Mailbox Summary Read Model Landed**: routine `queue`, `inbox`, and `pend` paths prefer maintained summaries and explicitly degrade when summaries are missing or corrupt
+- **Observer Surfaces Weakened**: `pend`, `watch`, `queue`, and `inbox` are non-authoritative snapshots; `ccb ask wait <job_id>` remains the terminal authority
+- **Real Platform Validation Added**: GitHub Actions now runs macOS and WSL ccbd/ask smoke, communication matrix, short soak, and fastpath stress jobs
+
+</details>
+
+<details>
 <summary><b>v6.0.29</b> - WSL Runtime State Relocation</summary>
 
 - **Runtime State Moved Off Mounted Drives**: on WSL projects rooted under `/mnt/<drive>/...`, project authority remains in `.ccb` while `ccbd/` and agent runtime state relocate to a local Linux state root with explicit marker files
 - **Diagnostics and Bundle Mapping Updated**: doctor output and support bundles now expose the project anchor, runtime-state root, relocation reason, and logical `.ccb` archive paths for relocated runtime files
 - **Provider Lookup and Ask Routing Kept Stable**: relocated runtime directories still resolve back to the project anchor for session discovery and ask sender attribution without changing Linux or macOS default layout behavior
+- **Runtime Markers Are Validated**: relocated runtime markers and refs now reject malformed or mismatched payloads, so stale relocation residue cannot silently remap one project to another
+- **WSL Smoke Matches the Final Contract**: the release smoke now expects the runtime-root relocation path that the relocated project actually writes, instead of treating the first relocation step as the final socket fallback
 
 </details>
 

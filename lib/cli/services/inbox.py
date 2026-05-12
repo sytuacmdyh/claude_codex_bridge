@@ -9,8 +9,8 @@ from .daemon import invoke_mounted_daemon
 def inbox_target(context: CliContext, command: ParsedInboxCommand) -> dict:
     return invoke_mounted_daemon(
         context,
-        allow_restart_stale=True,
-        request_fn=lambda client: client.inbox(command.agent_name),
+        allow_restart_stale=False,
+        request_fn=lambda client: client.inbox(command.agent_name, detail=command.detail),
     )
 
 

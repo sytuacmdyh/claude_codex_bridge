@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from threading import RLock
+from uuid import uuid4
 
-from agents.models import AgentRuntime, RuntimeBindingSource
+from agents.models import AgentRuntime, AgentState, RuntimeBindingSource
 from agents.store import AgentRestoreStore
 from ccbd.system import utc_now
 from provider_core.registry import build_default_session_binding_map
@@ -31,6 +33,7 @@ _STATE_PATCH_FIELDS = frozenset(
         'last_failure_reason',
         'lifecycle_state',
         'pid',
+        'mount_attempt_id',
     }
 )
 _AUTHORITY_ONLY_FIELDS = frozenset(
@@ -81,6 +84,7 @@ class RuntimeService:
         self._session_bindings = session_bindings or build_default_session_binding_map(include_optional=True)
         self._daemon_generation_getter = daemon_generation_getter
         self._clock = clock
+        self._attach_lock = RLock()
 
     def attach(
         self,
@@ -112,46 +116,115 @@ class RuntimeService:
         managed_by: str | None = None,
         binding_source: str | RuntimeBindingSource | None = None,
     ) -> AgentRuntime:
-        resolved_daemon_generation = daemon_generation
-        if resolved_daemon_generation is None and self._daemon_generation_getter is not None:
-            try:
-                value = self._daemon_generation_getter()
-            except Exception:
-                value = None
-            if value is not None:
-                resolved_daemon_generation = int(value)
-        runtime = attach_runtime_impl(
-            registry=self._registry,
-            project_id=self._project_id,
-            clock=self._clock,
-            agent_name=agent_name,
-            workspace_path=workspace_path,
-            backend_type=backend_type,
-            pid=pid,
-            runtime_ref=runtime_ref,
-            session_ref=session_ref,
-            health=health,
-            provider=provider,
-            runtime_root=runtime_root,
-            runtime_pid=runtime_pid,
-            terminal_backend=terminal_backend,
-            pane_id=pane_id,
-            active_pane_id=active_pane_id,
-            pane_title_marker=pane_title_marker,
-            pane_state=pane_state,
-            tmux_socket_name=tmux_socket_name,
-            tmux_socket_path=tmux_socket_path,
-            session_file=session_file,
-            session_id=session_id,
-            slot_key=slot_key,
-            window_id=window_id,
-            workspace_epoch=workspace_epoch,
-            lifecycle_state=lifecycle_state,
-            daemon_generation=resolved_daemon_generation,
-            managed_by=managed_by,
-            binding_source=binding_source,
-        )
-        return runtime
+        with self._attach_lock:
+            resolved_daemon_generation = daemon_generation
+            if resolved_daemon_generation is None and self._daemon_generation_getter is not None:
+                try:
+                    value = self._daemon_generation_getter()
+                except Exception:
+                    value = None
+                if value is not None:
+                    resolved_daemon_generation = int(value)
+            runtime = attach_runtime_impl(
+                registry=self._registry,
+                project_id=self._project_id,
+                clock=self._clock,
+                agent_name=agent_name,
+                workspace_path=workspace_path,
+                backend_type=backend_type,
+                pid=pid,
+                runtime_ref=runtime_ref,
+                session_ref=session_ref,
+                health=health,
+                provider=provider,
+                runtime_root=runtime_root,
+                runtime_pid=runtime_pid,
+                terminal_backend=terminal_backend,
+                pane_id=pane_id,
+                active_pane_id=active_pane_id,
+                pane_title_marker=pane_title_marker,
+                pane_state=pane_state,
+                tmux_socket_name=tmux_socket_name,
+                tmux_socket_path=tmux_socket_path,
+                session_file=session_file,
+                session_id=session_id,
+                slot_key=slot_key,
+                window_id=window_id,
+                workspace_epoch=workspace_epoch,
+                lifecycle_state=lifecycle_state,
+                daemon_generation=resolved_daemon_generation,
+                managed_by=managed_by,
+                binding_source=binding_source,
+            )
+            return runtime
+
+    def attach_mount_attempt_authority(
+        self,
+        *,
+        agent_name: str,
+        attempt_id: str,
+        workspace_path: str,
+        backend_type: str,
+        pid: int | None = None,
+        runtime_ref: str | None = None,
+        session_ref: str | None = None,
+        health: str | None = None,
+        provider: str | None = None,
+        runtime_root: str | None = None,
+        runtime_pid: int | None = None,
+        terminal_backend: str | None = None,
+        pane_id: str | None = None,
+        active_pane_id: str | None = None,
+        pane_title_marker: str | None = None,
+        pane_state: str | None = None,
+        tmux_socket_name: str | None = None,
+        tmux_socket_path: str | None = None,
+        session_file: str | None = None,
+        session_id: str | None = None,
+        slot_key: str | None = None,
+        window_id: str | None = None,
+        workspace_epoch: int | None = None,
+        lifecycle_state: str | None = None,
+        daemon_generation: int | None = None,
+        managed_by: str | None = None,
+        binding_source: str | RuntimeBindingSource | None = None,
+    ) -> tuple[AgentRuntime | None, bool]:
+        with self._attach_lock:
+            current = self._registry.get(agent_name)
+            if current is None or current.mount_attempt_id != attempt_id:
+                return current, False
+            runtime = self.attach(
+                agent_name=agent_name,
+                workspace_path=workspace_path,
+                backend_type=backend_type,
+                pid=pid,
+                runtime_ref=runtime_ref,
+                session_ref=session_ref,
+                health=health,
+                provider=provider,
+                runtime_root=runtime_root,
+                runtime_pid=runtime_pid,
+                terminal_backend=terminal_backend,
+                pane_id=pane_id,
+                active_pane_id=active_pane_id,
+                pane_title_marker=pane_title_marker,
+                pane_state=pane_state,
+                tmux_socket_name=tmux_socket_name,
+                tmux_socket_path=tmux_socket_path,
+                session_file=session_file,
+                session_id=session_id,
+                slot_key=slot_key,
+                window_id=window_id,
+                workspace_epoch=workspace_epoch,
+                lifecycle_state=lifecycle_state,
+                daemon_generation=daemon_generation,
+                managed_by=managed_by,
+                binding_source=binding_source,
+            )
+            refreshed = self._registry.get(agent_name)
+            if refreshed is None or refreshed.mount_attempt_id != attempt_id:
+                return refreshed, False
+            return runtime, True
 
     def adopt_runtime_authority(
         self,
@@ -195,6 +268,7 @@ class RuntimeService:
             'daemon_generation',
             'managed_by',
             'binding_source',
+            'mount_attempt_id',
         }
         unknown = set(overrides) - recognized
         if unknown:
@@ -202,7 +276,7 @@ class RuntimeService:
         workspace_path = str(overrides.pop('workspace_path', runtime.workspace_path) or '').strip()
         if not workspace_path:
             workspace_path = str(self._layout.workspace_path(runtime.agent_name))
-        return self.attach(
+        updated = self.attach(
             agent_name=runtime.agent_name,
             workspace_path=workspace_path,
             backend_type=overrides.pop('backend_type', runtime.backend_type),
@@ -230,6 +304,10 @@ class RuntimeService:
             managed_by=overrides.pop('managed_by', runtime.managed_by),
             binding_source=overrides.pop('binding_source', runtime.binding_source),
         )
+        mount_attempt_id = overrides.pop('mount_attempt_id', runtime.mount_attempt_id)
+        if updated.mount_attempt_id == mount_attempt_id:
+            return updated
+        return self._upsert_authority(replace(updated, mount_attempt_id=mount_attempt_id))
 
     def patch_runtime_state(self, runtime: AgentRuntime, **updates) -> AgentRuntime:
         unknown = set(updates) - _STATE_PATCH_FIELDS
@@ -238,10 +316,85 @@ class RuntimeService:
         forbidden = set(updates) & _AUTHORITY_ONLY_FIELDS
         if forbidden:
             raise ValueError(f'authority fields cannot be patched: {", ".join(sorted(forbidden))}')
-        candidate = replace(runtime, **updates)
-        if candidate == runtime:
-            return runtime
+        current = self._registry.get(runtime.agent_name) or runtime
+        candidate = replace(current, **updates)
+        if candidate == current:
+            return current
         return self._registry.upsert(candidate)
+
+    def begin_mount_attempt(
+        self,
+        runtime: AgentRuntime,
+        *,
+        attempted_at: str,
+    ) -> tuple[AgentRuntime, str]:
+        attempt_id = f'mount-{uuid4().hex}'
+        started = self._upsert_authority(
+            replace(
+                runtime,
+                mount_attempt_id=attempt_id,
+                last_reconcile_at=attempted_at,
+            )
+        )
+        return started, attempt_id
+
+    def finalize_mount_attempt_success(
+        self,
+        agent_name: str,
+        *,
+        attempt_id: str,
+        attempted_at: str,
+        restart_count: int,
+    ) -> tuple[AgentRuntime | None, bool]:
+        current = self._registry.get(agent_name)
+        if current is None or current.mount_attempt_id != attempt_id:
+            return current, False
+        state = AgentState.IDLE if current.state is AgentState.STARTING else current.state
+        lifecycle_state = 'idle' if current.state is AgentState.STARTING else current.lifecycle_state
+        updated = self._upsert_authority(
+            replace(
+                current,
+                state=state,
+                reconcile_state='steady',
+                restart_count=restart_count,
+                last_reconcile_at=attempted_at,
+                last_failure_reason=None,
+                lifecycle_state=lifecycle_state,
+                mount_attempt_id=None,
+            )
+        )
+        return updated, True
+
+    def finalize_mount_attempt_failure(
+        self,
+        agent_name: str,
+        *,
+        attempt_id: str,
+        attempted_at: str,
+        state: AgentState,
+        health: str,
+        reconcile_state: str,
+        restart_count: int,
+        reason: str,
+        lifecycle_state: str | None,
+    ) -> tuple[AgentRuntime | None, bool]:
+        current = self._registry.get(agent_name)
+        if current is None or current.mount_attempt_id != attempt_id:
+            return current, False
+        updated = self._upsert_authority(
+            replace(
+                current,
+                state=state,
+                health=health,
+                reconcile_state=reconcile_state,
+                restart_count=restart_count,
+                last_reconcile_at=attempted_at,
+                last_failure_reason=reason,
+                lifecycle_state=lifecycle_state,
+                mount_attempt_id=None,
+            )
+        )
+        return updated, True
 
     def restore(self, agent_name: str):
         return restore_runtime_impl(
@@ -273,6 +426,12 @@ class RuntimeService:
             agent_name=agent_name,
             recover=recover,
         )
+
+    def _upsert_authority(self, runtime: AgentRuntime) -> AgentRuntime:
+        upsert_authority = getattr(self._registry, 'upsert_authority', None)
+        if callable(upsert_authority):
+            return upsert_authority(runtime)
+        return self._registry.upsert(runtime)
 
 
 __all__ = ['RuntimeService']

@@ -117,6 +117,7 @@ def test_completion_tracker_clears_session_reply_preview_after_rotate() -> None:
         ),
     )
     assert first.decision.reply == 'stable reply'
+    assert first.state.reply_started is True
 
     rotated = tracker.ingest(
         'job_1',

@@ -8,6 +8,7 @@ from ccbd.services.project_namespace import ProjectNamespaceController
 from ccbd.services.project_namespace_pane import inspect_project_namespace_pane
 from ccbd.services.project_namespace_runtime.backend import build_backend
 from ccbd.start_runtime.layout import cmd_bootstrap_command
+from terminal_runtime.placeholders import pane_placeholder_argv
 from terminal_runtime.tmux_identity import apply_ccb_pane_identity
 from terminal_runtime.tmux_readiness import (
     TmuxTransientServerUnavailable,
@@ -17,7 +18,6 @@ from terminal_runtime.tmux_readiness import (
 
 from .loop_context import RuntimeSupervisionContext
 
-_PLACEHOLDER_CMD = 'while :; do sleep 3600; done'
 _BACKGROUND_CMD_SLOT_PROBE_TIMEOUT_S = 0.0
 
 
@@ -170,9 +170,7 @@ def split_before_anchor_pane(
         str(plan.percent),
         '-c',
         project_root,
-        'sh',
-        '-lc',
-        _PLACEHOLDER_CMD,
+        *pane_placeholder_argv(),
     ]
     try:
         cp = runner(

@@ -21,7 +21,7 @@ def wait_for_replies(
     poll_interval_s = resolve_poll_interval()
     started_at = monotonic_fn()
     deadline = started_at + timeout_s
-    handle = connect_mounted_daemon_fn(context, allow_restart_stale=True)
+    handle = connect_mounted_daemon_fn(context, allow_restart_stale=False)
     assert handle.client is not None
     while True:
         try:
@@ -29,7 +29,7 @@ def wait_for_replies(
         except (client_error_cls, service_error_cls):
             if monotonic_fn() >= deadline:
                 raise RuntimeError(f'wait {command.mode} timed out for target {command.target}')
-            handle = connect_mounted_daemon_fn(context, allow_restart_stale=True)
+            handle = connect_mounted_daemon_fn(context, allow_restart_stale=False)
             assert handle.client is not None
             sleep_fn(poll_interval_s)
             continue

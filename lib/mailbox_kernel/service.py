@@ -14,7 +14,21 @@ from .models import (
 )
 from .service_state import MailboxKernelRuntimeState, MailboxKernelStateMixin
 from .store import DeliveryLeaseStore, InboundEventStore, MailboxStore
-from .service_runtime import ack_reply, claim, claim_next, head_pending_event, latest_events, mark_terminal, peek_next, pending_events, refresh_mailbox
+from .service_runtime import (
+    ack_reply,
+    apply_incremental_summary_update,
+    apply_transition_summary_update,
+    claim,
+    claim_next,
+    head_pending_event,
+    latest_events,
+    mark_terminal,
+    peek_next,
+    pending_events,
+    project_mailbox_summary,
+    rebuild_mailbox_summary,
+    rewrite_head,
+)
 
 _TERMINAL_EVENT_STATES = frozenset(
     {
@@ -139,8 +153,114 @@ class MailboxKernelService(MailboxKernelStateMixin):
     ) -> InboundEventRecord | None:
         return mark_terminal(self, agent_name, inbound_event_id, status=InboundEventStatus.SUPERSEDED, finished_at=finished_at)
 
+    def rebuild_mailbox_summary(self, agent_name: str, *, updated_at: str | None = None) -> MailboxRecord:
+        return rebuild_mailbox_summary(self, agent_name, updated_at=updated_at)
+
+    def project_mailbox_summary(
+        self,
+        agent_name: str,
+        *,
+        updated_at: str | None = None,
+        prior=Ellipsis,
+    ) -> MailboxRecord:
+        return project_mailbox_summary(
+            self,
+            agent_name,
+            updated_at=updated_at,
+            prior=prior,
+        )
+
+    def rewrite_head(
+        self,
+        agent_name: str,
+        inbound_event_id: str,
+        *,
+        payload_ref: str | None,
+        status,
+        updated_at: str | None = None,
+        clear_progress: bool = False,
+    ) -> InboundEventRecord | None:
+        return rewrite_head(
+            self,
+            agent_name,
+            inbound_event_id,
+            payload_ref=payload_ref,
+            status=status,
+            updated_at=updated_at,
+            clear_progress=clear_progress,
+        )
+
+    def apply_incremental_summary_update(
+        self,
+        agent_name: str,
+        *,
+        queue_delta: int = 0,
+        pending_reply_delta: int = 0,
+        active_inbound_event_id=Ellipsis,
+        last_started_at: str | None = None,
+        last_finished_at: str | None = None,
+        updated_at: str | None = None,
+    ) -> MailboxRecord:
+        return apply_incremental_summary_update(
+            self,
+            agent_name,
+            queue_delta=queue_delta,
+            pending_reply_delta=pending_reply_delta,
+            active_inbound_event_id=active_inbound_event_id,
+            last_started_at=last_started_at,
+            last_finished_at=last_finished_at,
+            updated_at=updated_at,
+        )
+
+    def apply_transition_summary_update(
+        self,
+        agent_name: str,
+        *,
+        queue_depth: int,
+        pending_reply_count: int,
+        active_inbound_event_id,
+        last_started_at: str | None = None,
+        last_finished_at: str | None = None,
+        updated_at: str | None = None,
+        summary_source: str,
+        summary_head=Ellipsis,
+    ) -> MailboxRecord:
+        return apply_transition_summary_update(
+            self,
+            agent_name,
+            queue_depth=queue_depth,
+            pending_reply_count=pending_reply_count,
+            active_inbound_event_id=active_inbound_event_id,
+            last_started_at=last_started_at,
+            last_finished_at=last_finished_at,
+            updated_at=updated_at,
+            summary_source=summary_source,
+            summary_head=summary_head,
+        )
+
     def refresh_mailbox(self, agent_name: str, *, updated_at: str | None = None) -> MailboxRecord:
-        return refresh_mailbox(self, agent_name, updated_at=updated_at)
+        return self.rebuild_mailbox_summary(agent_name, updated_at=updated_at)
+
+    def upsert_mailbox_summary(
+        self,
+        agent_name: str,
+        *,
+        queue_delta: int = 0,
+        pending_reply_delta: int = 0,
+        active_inbound_event_id=Ellipsis,
+        last_started_at: str | None = None,
+        last_finished_at: str | None = None,
+        updated_at: str | None = None,
+    ) -> MailboxRecord:
+        return self.apply_incremental_summary_update(
+            agent_name,
+            queue_delta=queue_delta,
+            pending_reply_delta=pending_reply_delta,
+            active_inbound_event_id=active_inbound_event_id,
+            last_started_at=last_started_at,
+            last_finished_at=last_finished_at,
+            updated_at=updated_at,
+        )
 
 
 __all__ = ['MailboxKernelService']

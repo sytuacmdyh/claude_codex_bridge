@@ -26,6 +26,12 @@ def _spec(name: str, provider: str = "claude", *, provider_profile: ProviderProf
     )
 
 
+def _write_project_memory(project_root: Path, text: str) -> None:
+    path = project_root / '.ccb' / 'ccb_memory.md'
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding='utf-8')
+
+
 def test_build_hook_command_includes_completion_dir_and_workspace(tmp_path: Path) -> None:
     command = build_hook_command(
         provider='claude',
@@ -150,6 +156,319 @@ def test_prepare_provider_workspace_materializes_claude_settings_before_hooks(tm
     assert payload['theme'] == 'light'
     assert payload['hooks']['Stop'][0]['hooks'][0]['command']
     assert not (workspace / '.claude').exists()
+
+
+def test_prepare_provider_workspace_materializes_claude_memory_bundle_before_hooks(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project_root = tmp_path / 'repo'
+    workspace = project_root / 'workspace'
+    system_home = tmp_path / 'system-home'
+    system_claude = system_home / '.claude'
+    system_claude.mkdir(parents=True, exist_ok=True)
+    (system_claude / 'CLAUDE.md').write_text('system claude memory\n', encoding='utf-8')
+    project_root.mkdir(parents=True, exist_ok=True)
+    _write_project_memory(project_root, 'shared ccb memory\n')
+    (project_root / 'CLAUDE.md').write_text('project claude memory\n', encoding='utf-8')
+    private_memory = project_root / '.ccb' / 'agents' / 'agent1' / 'memory.md'
+    private_memory.parent.mkdir(parents=True, exist_ok=True)
+    private_memory.write_text('agent private memory\n', encoding='utf-8')
+    monkeypatch.setenv('HOME', str(system_home))
+
+    prepare_provider_workspace(
+        layout=PathLayout(project_root),
+        spec=_spec('agent1'),
+        workspace_path=workspace,
+        completion_dir=project_root / '.ccb' / 'agents' / 'agent1' / 'provider-runtime' / 'claude' / 'completion',
+        agent_name='agent1',
+        refresh_profile=True,
+    )
+
+    memory_path = project_root / '.ccb' / 'agents' / 'agent1' / 'provider-state' / 'claude' / 'home' / '.claude' / 'CLAUDE.md'
+    text = memory_path.read_text(encoding='utf-8')
+    assert text.startswith('# CCB Managed Agent Memory')
+    assert 'system claude memory' in text
+    assert 'shared ccb memory' in text
+    assert 'project claude memory' in text
+    assert 'agent private memory' in text
+
+
+def test_prepare_provider_workspace_records_claude_memory_projection_event_once(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project_root = tmp_path / 'repo'
+    workspace = project_root / 'workspace'
+    system_home = tmp_path / 'system-home'
+    system_claude = system_home / '.claude'
+    system_claude.mkdir(parents=True, exist_ok=True)
+    (system_claude / 'CLAUDE.md').write_text('system claude memory\n', encoding='utf-8')
+    project_root.mkdir(parents=True, exist_ok=True)
+    _write_project_memory(project_root, 'shared ccb memory\n')
+    monkeypatch.setenv('HOME', str(system_home))
+    layout = PathLayout(project_root)
+
+    for refresh_profile in (True, False):
+        prepare_provider_workspace(
+            layout=layout,
+            spec=_spec('agent1'),
+            workspace_path=workspace,
+            completion_dir=layout.agent_provider_runtime_dir('agent1', 'claude') / 'completion',
+            agent_name='agent1',
+            refresh_profile=refresh_profile,
+        )
+
+    events = [
+        json.loads(line)
+        for line in layout.agent_events_path('agent1').read_text(encoding='utf-8').splitlines()
+        if line.strip()
+    ]
+    memory_events = [event for event in events if str(event.get('event_type', '')).startswith('claude_memory_projection_')]
+    assert len(memory_events) == 1
+    assert memory_events[0]['event_type'] == 'claude_memory_projection_ok'
+    assert memory_events[0]['reason'] == 'written'
+    assert memory_events[0]['sha256']
+    assert memory_events[0]['source_count'] >= 2
+    marker_path = layout.agent_provider_runtime_dir('agent1', 'claude') / 'claude-memory-projection.json'
+    marker = json.loads(marker_path.read_text(encoding='utf-8'))
+    assert marker['status'] == 'ok'
+
+
+def test_prepare_provider_workspace_records_codex_memory_projection_event_once(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project_root = tmp_path / 'repo'
+    workspace = project_root / 'workspace'
+    system_home = tmp_path / 'system-home'
+    system_codex = system_home / '.codex'
+    system_codex.mkdir(parents=True, exist_ok=True)
+    (system_codex / 'AGENTS.md').write_text('system codex memory\n', encoding='utf-8')
+    project_root.mkdir(parents=True, exist_ok=True)
+    _write_project_memory(project_root, 'shared ccb memory\n')
+    monkeypatch.setenv('CODEX_HOME', str(system_codex))
+    layout = PathLayout(project_root)
+
+    for refresh_profile in (True, False):
+        prepare_provider_workspace(
+            layout=layout,
+            spec=_spec('agent1', provider='codex'),
+            workspace_path=workspace,
+            completion_dir=layout.agent_provider_runtime_dir('agent1', 'codex') / 'completion',
+            agent_name='agent1',
+            refresh_profile=refresh_profile,
+        )
+
+    memory_path = project_root / '.ccb' / 'agents' / 'agent1' / 'provider-state' / 'codex' / 'home' / 'AGENTS.md'
+    text = memory_path.read_text(encoding='utf-8')
+    assert text.startswith('# CCB Managed Agent Memory')
+    assert 'system codex memory' in text
+    assert 'shared ccb memory' in text
+
+    events = [
+        json.loads(line)
+        for line in layout.agent_events_path('agent1').read_text(encoding='utf-8').splitlines()
+        if line.strip()
+    ]
+    memory_events = [event for event in events if str(event.get('event_type', '')).startswith('codex_memory_projection_')]
+    assert len(memory_events) == 1
+    assert memory_events[0]['event_type'] == 'codex_memory_projection_ok'
+    assert memory_events[0]['reason'] == 'written'
+    assert memory_events[0]['sha256']
+    assert memory_events[0]['source_count'] >= 2
+    marker_path = layout.agent_provider_runtime_dir('agent1', 'codex') / 'codex-memory-projection.json'
+    marker = json.loads(marker_path.read_text(encoding='utf-8'))
+    assert marker['status'] == 'ok'
+
+
+def test_prepare_provider_workspace_respects_codex_explicit_runtime_home(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project_root = tmp_path / 'repo'
+    workspace = project_root / 'workspace'
+    explicit_home = tmp_path / 'explicit-codex-home'
+    source_home = tmp_path / 'source-codex-home'
+    source_home.mkdir(parents=True, exist_ok=True)
+    (source_home / 'AGENTS.md').write_text('system codex memory\n', encoding='utf-8')
+    project_root.mkdir(parents=True, exist_ok=True)
+    _write_project_memory(project_root, 'shared ccb memory\n')
+    monkeypatch.setenv('CODEX_HOME', str(source_home))
+    layout = PathLayout(project_root)
+
+    prepare_provider_workspace(
+        layout=layout,
+        spec=_spec(
+            'agent1',
+            provider='codex',
+            provider_profile=ProviderProfileSpec(mode='isolated', home=str(explicit_home)),
+        ),
+        workspace_path=workspace,
+        completion_dir=layout.agent_provider_runtime_dir('agent1', 'codex') / 'completion',
+        agent_name='agent1',
+        refresh_profile=True,
+    )
+
+    assert (explicit_home / 'AGENTS.md').is_file()
+    assert not (layout.agent_provider_state_dir('agent1', 'codex') / 'home' / 'AGENTS.md').exists()
+
+
+def test_prepare_provider_workspace_materializes_opencode_memory_config(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project_root = tmp_path / 'repo'
+    workspace = project_root / 'workspace'
+    project_root.mkdir(parents=True, exist_ok=True)
+    _write_project_memory(project_root, 'shared ccb memory\n')
+    (project_root / 'AGENTS.md').write_text('project opencode memory\n', encoding='utf-8')
+    (project_root / 'opencode.json').write_text(
+        json.dumps({'provider': 'anthropic', 'instructions': ['AGENTS.md']}, ensure_ascii=False, indent=2),
+        encoding='utf-8',
+    )
+    layout = PathLayout(project_root)
+
+    prepare_provider_workspace(
+        layout=layout,
+        spec=_spec('agent1', provider='opencode'),
+        workspace_path=workspace,
+        completion_dir=layout.agent_provider_runtime_dir('agent1', 'opencode') / 'completion',
+        agent_name='agent1',
+        refresh_profile=True,
+    )
+
+    config_path = layout.agent_provider_state_dir('agent1', 'opencode') / 'opencode.json'
+    bundle_path = project_root / '.ccb' / 'runtime' / 'memory' / 'agent1.md'
+    config = json.loads(config_path.read_text(encoding='utf-8'))
+    assert config['provider'] == 'anthropic'
+    assert config['instructions'] == ['AGENTS.md', '.ccb/runtime/memory/agent1.md']
+    assert 'shared ccb memory' in bundle_path.read_text(encoding='utf-8')
+    assert 'project opencode memory' in bundle_path.read_text(encoding='utf-8')
+
+
+def test_prepare_provider_workspace_records_opencode_config_merge_failure(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project_root = tmp_path / 'repo'
+    workspace = project_root / 'workspace'
+    project_root.mkdir(parents=True, exist_ok=True)
+    _write_project_memory(project_root, 'shared ccb memory\n')
+    (project_root / 'opencode.json').write_text('{broken json\n', encoding='utf-8')
+    layout = PathLayout(project_root)
+
+    prepare_provider_workspace(
+        layout=layout,
+        spec=_spec('agent1', provider='opencode'),
+        workspace_path=workspace,
+        completion_dir=layout.agent_provider_runtime_dir('agent1', 'opencode') / 'completion',
+        agent_name='agent1',
+        refresh_profile=True,
+    )
+
+    events = [
+        json.loads(line)
+        for line in layout.agent_events_path('agent1').read_text(encoding='utf-8').splitlines()
+        if line.strip()
+    ]
+    assert any(event.get('event_type') == 'opencode_config_merge_failed' for event in events)
+    projection = [event for event in events if event.get('event_type') == 'opencode_memory_projection_ok'][-1]
+    assert projection['config_merge_status'] == 'failed'
+    assert projection['config_merge_reason'] == 'JSONDecodeError'
+
+
+def test_prepare_provider_workspace_records_claude_binary_cache_drift_once(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / 'repo'
+    workspace = project_root / 'workspace'
+    system_home = tmp_path / 'system-home'
+    monkeypatch.setenv('HOME', str(system_home))
+    layout = PathLayout(project_root)
+    versions_dir = layout.agent_provider_state_dir('agent1', 'claude') / 'home' / '.local' / 'share' / 'claude' / 'versions'
+    (versions_dir / '2.1.137').mkdir(parents=True, exist_ok=True)
+    (versions_dir / '2.1.137' / 'claude').write_text('binary\n', encoding='utf-8')
+
+    for refresh_profile in (True, False):
+        prepare_provider_workspace(
+            layout=layout,
+            spec=_spec('agent1'),
+            workspace_path=workspace,
+            completion_dir=layout.agent_provider_runtime_dir('agent1', 'claude') / 'completion',
+            agent_name='agent1',
+            refresh_profile=refresh_profile,
+        )
+
+    events = [
+        json.loads(line)
+        for line in layout.agent_events_path('agent1').read_text(encoding='utf-8').splitlines()
+        if line.strip()
+    ]
+    drift_events = [event for event in events if event.get('event_type') == 'claude_binary_cache_drift']
+    assert len(drift_events) == 1
+    assert drift_events[0]['reason'] == 'per_agent_versions_cache_present'
+    assert drift_events[0]['version_names'] == ['2.1.137']
+
+
+def test_prepare_provider_workspace_records_new_claude_binary_cache_signature(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project_root = tmp_path / 'repo'
+    workspace = project_root / 'workspace'
+    monkeypatch.setenv('HOME', str(tmp_path / 'system-home'))
+    layout = PathLayout(project_root)
+    versions_dir = layout.agent_provider_state_dir('agent1', 'claude') / 'home' / '.local' / 'share' / 'claude' / 'versions'
+    (versions_dir / '2.1.137').mkdir(parents=True, exist_ok=True)
+
+    prepare_provider_workspace(
+        layout=layout,
+        spec=_spec('agent1'),
+        workspace_path=workspace,
+        completion_dir=layout.agent_provider_runtime_dir('agent1', 'claude') / 'completion',
+        agent_name='agent1',
+        refresh_profile=True,
+    )
+    (versions_dir / '2.1.138').mkdir(parents=True, exist_ok=True)
+    prepare_provider_workspace(
+        layout=layout,
+        spec=_spec('agent1'),
+        workspace_path=workspace,
+        completion_dir=layout.agent_provider_runtime_dir('agent1', 'claude') / 'completion',
+        agent_name='agent1',
+        refresh_profile=False,
+    )
+
+    events = [
+        json.loads(line)
+        for line in layout.agent_events_path('agent1').read_text(encoding='utf-8').splitlines()
+        if line.strip()
+    ]
+    drift_events = [event for event in events if event.get('event_type') == 'claude_binary_cache_drift']
+    assert [event['version_names'] for event in drift_events] == [['2.1.137'], ['2.1.137', '2.1.138']]
+
+
+def test_prepare_provider_workspace_does_not_record_claude_binary_cache_drift_when_absent(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project_root = tmp_path / 'repo'
+    monkeypatch.setenv('HOME', str(tmp_path / 'system-home'))
+    layout = PathLayout(project_root)
+
+    prepare_provider_workspace(
+        layout=layout,
+        spec=_spec('agent1'),
+        workspace_path=project_root / 'workspace',
+        completion_dir=layout.agent_provider_runtime_dir('agent1', 'claude') / 'completion',
+        agent_name='agent1',
+        refresh_profile=True,
+    )
+
+    events_path = layout.agent_events_path('agent1')
+    if not events_path.exists():
+        return
+    events = [json.loads(line) for line in events_path.read_text(encoding='utf-8').splitlines() if line.strip()]
+    assert all(event.get('event_type') != 'claude_binary_cache_drift' for event in events)
 
 
 def test_prepare_provider_workspace_uses_account_home_when_current_home_is_managed_claude(
@@ -364,6 +683,85 @@ def test_install_gemini_hooks_trusts_workspace_in_managed_home(tmp_path: Path) -
     data = json.loads(trust_path.read_text(encoding='utf-8'))
     assert data[str(workspace.resolve())] == 'TRUST_FOLDER'
     assert not (workspace / '.gemini').exists()
+
+
+def test_prepare_provider_workspace_materializes_gemini_memory_bundle_before_hooks(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project_root = tmp_path / 'repo'
+    workspace = project_root / 'workspace'
+    system_home = tmp_path / 'system-home'
+    system_gemini = system_home / '.gemini'
+    system_gemini.mkdir(parents=True, exist_ok=True)
+    (system_gemini / 'GEMINI.md').write_text('system gemini memory\n', encoding='utf-8')
+    project_root.mkdir(parents=True, exist_ok=True)
+    _write_project_memory(project_root, 'shared ccb memory\n')
+    (project_root / 'GEMINI.md').write_text('project gemini memory\n', encoding='utf-8')
+    private_memory = project_root / '.ccb' / 'agents' / 'agent1' / 'memory.md'
+    private_memory.parent.mkdir(parents=True, exist_ok=True)
+    private_memory.write_text('agent private memory\n', encoding='utf-8')
+    monkeypatch.setenv('HOME', str(system_home))
+
+    prepare_provider_workspace(
+        layout=PathLayout(project_root),
+        spec=_spec('agent1', provider='gemini'),
+        workspace_path=workspace,
+        completion_dir=project_root / '.ccb' / 'agents' / 'agent1' / 'provider-runtime' / 'gemini' / 'completion',
+        agent_name='agent1',
+        refresh_profile=True,
+    )
+
+    gemini_dir = project_root / '.ccb' / 'agents' / 'agent1' / 'provider-state' / 'gemini' / 'home' / '.gemini'
+    text = (gemini_dir / 'GEMINI.md').read_text(encoding='utf-8')
+    settings = json.loads((gemini_dir / 'settings.json').read_text(encoding='utf-8'))
+    assert text.startswith('# CCB Managed Agent Memory')
+    assert 'system gemini memory' in text
+    assert 'shared ccb memory' in text
+    assert 'project gemini memory' in text
+    assert 'agent private memory' in text
+    assert settings['contextFileName'] == 'GEMINI.md'
+
+
+def test_prepare_provider_workspace_records_gemini_memory_projection_event_once(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project_root = tmp_path / 'repo'
+    workspace = project_root / 'workspace'
+    system_home = tmp_path / 'system-home'
+    system_gemini = system_home / '.gemini'
+    system_gemini.mkdir(parents=True, exist_ok=True)
+    (system_gemini / 'GEMINI.md').write_text('system gemini memory\n', encoding='utf-8')
+    project_root.mkdir(parents=True, exist_ok=True)
+    _write_project_memory(project_root, 'shared ccb memory\n')
+    monkeypatch.setenv('HOME', str(system_home))
+    layout = PathLayout(project_root)
+
+    for refresh_profile in (True, False):
+        prepare_provider_workspace(
+            layout=layout,
+            spec=_spec('agent1', provider='gemini'),
+            workspace_path=workspace,
+            completion_dir=layout.agent_provider_runtime_dir('agent1', 'gemini') / 'completion',
+            agent_name='agent1',
+            refresh_profile=refresh_profile,
+        )
+
+    events = [
+        json.loads(line)
+        for line in layout.agent_events_path('agent1').read_text(encoding='utf-8').splitlines()
+        if line.strip()
+    ]
+    memory_events = [event for event in events if str(event.get('event_type', '')).startswith('gemini_memory_projection_')]
+    assert len(memory_events) == 1
+    assert memory_events[0]['event_type'] == 'gemini_memory_projection_ok'
+    assert memory_events[0]['reason'] == 'written'
+    assert memory_events[0]['sha256']
+    assert memory_events[0]['source_count'] >= 2
+    marker_path = layout.agent_provider_runtime_dir('agent1', 'gemini') / 'gemini-memory-projection.json'
+    marker = json.loads(marker_path.read_text(encoding='utf-8'))
+    assert marker['status'] == 'ok'
 
 
 def test_prepare_provider_workspace_materializes_gemini_settings_before_hooks(tmp_path: Path, monkeypatch) -> None:

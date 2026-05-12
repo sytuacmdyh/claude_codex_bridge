@@ -19,8 +19,9 @@ def prepare_namespace_root_pane(
     *,
     epoch: int,
     terminal_size: tuple[int, int] | None = None,
+    timeout_s: float | None = None,
 ) -> None:
-    prepare_server(context.backend)
+    prepare_server(context.backend, timeout_s=timeout_s)
     if not context.session_is_alive:
         create_session(
             context.backend,
@@ -28,14 +29,16 @@ def prepare_namespace_root_pane(
             project_root=controller._layout.project_root,
             window_name=context.desired_control_window_name,
             terminal_size=terminal_size,
+            timeout_s=timeout_s,
         )
-    ensure_server_policy(context.backend)
+    ensure_server_policy(context.backend, timeout_s=timeout_s)
     ensure_window(
         context.backend,
         session_name=context.desired_session_name,
         window_name=context.desired_control_window_name,
         project_root=controller._layout.project_root,
         select=False,
+        timeout_s=timeout_s,
     )
     ensure_window(
         context.backend,
@@ -43,6 +46,7 @@ def prepare_namespace_root_pane(
         window_name=context.desired_workspace_window_name,
         project_root=controller._layout.project_root,
         select=True,
+        timeout_s=timeout_s,
     )
     root_pane = window_root_pane(
         context.backend,
@@ -50,6 +54,7 @@ def prepare_namespace_root_pane(
             context.desired_session_name,
             context.desired_workspace_window_name,
         ),
+        timeout_s=timeout_s,
     )
     apply_namespace_identity(
         controller,

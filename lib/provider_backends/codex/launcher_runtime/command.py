@@ -12,12 +12,20 @@ from .command_runtime import resolve_codex_home_layout as _resolve_codex_home_la
 from .session_paths import load_resume_session_id
 
 
-def build_start_cmd(command, spec, runtime_dir: Path, launch_session_id: str) -> str:
+def build_start_cmd(
+    command,
+    spec,
+    runtime_dir: Path,
+    launch_session_id: str,
+    *,
+    prepared_state: dict[str, object] | None = None,
+) -> str:
     return _build_start_cmd_impl(
         command,
         spec,
         runtime_dir,
         launch_session_id,
+        prepared_state=prepared_state,
         load_resolved_provider_profile_fn=load_resolved_provider_profile,
         prepare_codex_home_overrides_fn=prepare_codex_home_overrides,
         provider_start_parts_fn=provider_start_parts,
@@ -30,8 +38,8 @@ def build_codex_shell_prefix(*, profile) -> list[str]:
     return _build_codex_shell_prefix_impl(profile=profile, provider_api_env_keys_fn=provider_api_env_keys)
 
 
-def prepare_codex_home_overrides(runtime_dir: Path, profile) -> dict[str, str]:
-    return _prepare_codex_home_overrides_impl(runtime_dir, profile)
+def prepare_codex_home_overrides(runtime_dir: Path, profile, **kwargs) -> dict[str, str]:
+    return _prepare_codex_home_overrides_impl(runtime_dir, profile, **kwargs)
 
 
 def resolve_codex_home_layout(runtime_dir: Path, profile):

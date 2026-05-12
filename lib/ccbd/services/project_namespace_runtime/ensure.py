@@ -36,15 +36,24 @@ def ensure_project_namespace(
     context = recreate_for_layout_change(controller, context)
 
     if context.session_is_alive and context.current is not None:
-        return persist_refreshed_namespace(controller, context)
+        return persist_refreshed_namespace(
+            controller,
+            context,
+            timeout_s=session_probe_timeout_s,
+        )
 
     prepare_namespace_root_pane(
         controller,
         context,
         epoch=context.current.namespace_epoch + 1 if context.current is not None else 1,
         terminal_size=terminal_size,
+        timeout_s=session_probe_timeout_s,
     )
-    return build_created_namespace(controller, context)
+    return build_created_namespace(
+        controller,
+        context,
+        timeout_s=session_probe_timeout_s,
+    )
 
 
 __all__ = ['ensure_project_namespace']

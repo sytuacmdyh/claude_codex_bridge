@@ -21,9 +21,13 @@ import cli.services.runtime_launch as runtime_launch
 from cli.services.runtime_launch import ensure_agent_runtime
 from provider_backends.claude import launcher as claude_launcher
 from provider_backends.codex import launcher as codex_launcher
+from provider_backends.droid import launcher as droid_launcher
 from provider_backends.gemini import launcher as gemini_launcher
+from provider_backends.opencode import launcher as opencode_launcher
 from provider_backends.runtime_restore import ProviderRestoreTarget
+from provider_backends.codex.launcher_runtime.command import prepare_codex_home_overrides as prepare_codex_home_overrides_for_test
 import provider_profiles.codex_home_config as codex_home_config
+from provider_profiles import load_resolved_provider_profile
 from provider_profiles.models import ResolvedProviderProfile
 from project.ids import compute_project_id
 from project.resolver import ProjectContext
@@ -66,6 +70,115 @@ def _write_provider_profile(runtime_dir: Path, profile: ResolvedProviderProfile)
         json.dumps(profile.to_record(), ensure_ascii=False, indent=2),
         encoding='utf-8',
     )
+
+
+def _project_memory_path(project_root: Path) -> Path:
+    return project_root / '.ccb' / 'ccb_memory.md'
+
+
+def _write_project_memory(project_root: Path, text: str) -> None:
+    path = _project_memory_path(project_root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding='utf-8')
+
+
+def _claude_prepared_state(runtime_dir: Path) -> dict[str, object]:
+    return {'project_root': _launch_project_root(runtime_dir)}
+
+
+def _prepare_claude_home_for_test(
+    spec: AgentSpec,
+    runtime_dir: Path,
+    *,
+    workspace_path: Path | None = None,
+) -> dict[str, object]:
+    project_root = _launch_project_root(runtime_dir)
+    workspace = workspace_path or project_root
+    from cli.services.provider_hooks import prepare_provider_workspace
+
+    prepare_provider_workspace(
+        layout=PathLayout(project_root),
+        spec=spec,
+        workspace_path=workspace,
+        completion_dir=Path(runtime_dir) / 'completion',
+        agent_name=spec.name,
+        refresh_profile=False,
+    )
+    return _claude_prepared_state(runtime_dir)
+
+
+def _codex_prepared_state(runtime_dir: Path, *, agent_name: str = 'agent1') -> dict[str, object]:
+    project_root = _launch_project_root(runtime_dir)
+    return {
+        'agent_name': agent_name,
+        'project_root': project_root,
+        'workspace_path': project_root,
+        'agent_events_path': project_root / '.ccb' / 'agents' / agent_name / 'events.jsonl',
+    }
+
+
+def _launch_project_root(runtime_dir: Path) -> Path:
+    runtime = Path(runtime_dir)
+    project_root = runtime.parent
+    for parent in runtime.parents:
+        if parent.name == '.ccb':
+            project_root = parent.parent
+            break
+    return project_root
+
+
+def _prepare_codex_home_for_test(spec: AgentSpec, runtime_dir: Path) -> dict[str, object]:
+    prepared = _codex_prepared_state(runtime_dir, agent_name=spec.name)
+    profile = load_resolved_provider_profile(runtime_dir)
+    prepare_codex_home_overrides_for_test(
+        runtime_dir,
+        profile,
+        refresh_home=True,
+        project_root=prepared['project_root'],
+        agent_name=spec.name,
+        workspace_path=prepared['workspace_path'],
+        memory_projection_event_path=prepared['agent_events_path'],
+        memory_projection_marker_path=Path(runtime_dir) / 'codex-memory-projection.json',
+    )
+    return prepared
+
+
+def _codex_start_cmd(command, spec: AgentSpec, runtime_dir: Path, launch_session_id: str) -> str:
+    prepared = _prepare_codex_home_for_test(spec, runtime_dir)
+    return codex_launcher.build_start_cmd(
+        command,
+        spec,
+        runtime_dir,
+        launch_session_id,
+        prepared_state=prepared,
+    )
+
+
+def _opencode_prepared_state(runtime_dir: Path, *, agent_name: str = 'agent1') -> dict[str, object]:
+    project_root = _launch_project_root(runtime_dir)
+    return {
+        'agent_name': agent_name,
+        'project_root': project_root,
+        'workspace_path': project_root,
+        'agent_events_path': project_root / '.ccb' / 'agents' / agent_name / 'events.jsonl',
+        'opencode_config_path': project_root / '.ccb' / 'agents' / agent_name / 'provider-state' / 'opencode' / 'opencode.json',
+    }
+
+
+def _prepare_opencode_workspace_for_test(spec: AgentSpec, runtime_dir: Path, *, workspace_path: Path | None = None) -> dict[str, object]:
+    project_root = _launch_project_root(runtime_dir)
+    workspace = workspace_path or project_root
+    from cli.services.provider_hooks import prepare_provider_workspace
+
+    prepare_provider_workspace(
+        layout=PathLayout(project_root),
+        spec=spec,
+        workspace_path=workspace,
+        completion_dir=Path(runtime_dir) / 'completion',
+        agent_name=spec.name,
+        refresh_profile=False,
+    )
+    return _opencode_prepared_state(runtime_dir, agent_name=spec.name)
 
 
 def _assert_caller_env_exports(start_cmd: str, *, actor: str, runtime_dir: Path, session_id: str) -> None:
@@ -737,6 +850,8 @@ def test_ensure_agent_runtime_launches_named_claude_session(monkeypatch, tmp_pat
     assert payload['work_dir'] == str(resume_dir)
     assert payload['ccb_session_id'].startswith('ccb-reviewer-')
     assert tmux_state['cwd'] == str(resume_dir)
+    managed_memory = expected_claude_home / '.claude' / 'CLAUDE.md'
+    assert f'workspace_path: {resume_dir.resolve()}' in managed_memory.read_text(encoding='utf-8')
     assert payload['start_cmd'].startswith('unset ANTHROPIC_BASE_URL; ')
     assert f'HOME={shlex.quote(str(expected_claude_home))}' in payload['start_cmd']
     assert f'CLAUDE_PROJECTS_ROOT={shlex.quote(str(expected_claude_home / ".claude" / "projects"))}' in payload['start_cmd']
@@ -788,6 +903,8 @@ def test_ensure_agent_runtime_launches_named_opencode_session(monkeypatch, tmp_p
     assert result.binding.session_ref == str(expected_session)
     payload = json.loads(expected_session.read_text(encoding='utf-8'))
     assert payload['pane_title_marker'].startswith('CCB-builder-')
+    config_path = ctx.paths.agent_provider_state_dir('builder', 'opencode') / 'opencode.json'
+    assert f'OPENCODE_CONFIG={shlex.quote(str(config_path))}' in payload['start_cmd']
     _assert_caller_env_exports(
         payload['start_cmd'],
         actor='builder',
@@ -796,6 +913,7 @@ def test_ensure_agent_runtime_launches_named_opencode_session(monkeypatch, tmp_p
     )
     assert payload['start_cmd'].endswith('opencode --continue')
     assert payload['ccb_session_id'].startswith('ccb-builder-')
+    assert config_path.is_file()
 
 
 def test_ensure_agent_runtime_uses_assigned_tmux_pane(monkeypatch, tmp_path: Path) -> None:
@@ -1341,7 +1459,7 @@ def test_codex_launcher_build_start_cmd_isolates_invalid_global_codex_config(mon
     spec = _spec('agent1')
     command = ParsedStartCommand(project=None, agent_names=('agent1',), restore=False, auto_permission=False)
 
-    cmd = codex_launcher.build_start_cmd(command, spec, runtime_dir, 'sess-1')
+    cmd = _codex_start_cmd(command, spec, runtime_dir, 'sess-1')
 
     isolated_home = runtime_dir / 'codex-state' / 'home'
     assert f'CODEX_HOME={shlex.quote(str(isolated_home))}' in cmd
@@ -1367,7 +1485,7 @@ def test_codex_launcher_build_start_cmd_does_not_require_toml_parser_for_config_
     spec = _spec('agent1')
     command = ParsedStartCommand(project=None, agent_names=('agent1',), restore=False, auto_permission=False)
 
-    cmd = codex_launcher.build_start_cmd(command, spec, runtime_dir, 'sess-no-toml')
+    cmd = _codex_start_cmd(command, spec, runtime_dir, 'sess-no-toml')
 
     isolated_home = runtime_dir / 'codex-state' / 'home'
     assert f'CODEX_HOME={shlex.quote(str(isolated_home))}' in cmd
@@ -1386,7 +1504,7 @@ def test_codex_launcher_build_start_cmd_uses_agent_scoped_session_root_by_defaul
     spec = _spec('agent1')
     command = ParsedStartCommand(project=None, agent_names=('agent1',), restore=False, auto_permission=False)
 
-    cmd = codex_launcher.build_start_cmd(command, spec, runtime_dir, 'sess-default')
+    cmd = _codex_start_cmd(command, spec, runtime_dir, 'sess-default')
 
     codex_home = runtime_dir.parents[1] / 'provider-state' / 'codex' / 'home'
     session_root = codex_home / 'sessions'
@@ -1416,7 +1534,7 @@ def test_codex_launcher_build_start_cmd_includes_agent_model_shortcut(monkeypatc
     )
     command = ParsedStartCommand(project=None, agent_names=('agent1',), restore=False, auto_permission=False)
 
-    cmd = codex_launcher.build_start_cmd(command, spec, runtime_dir, 'sess-model')
+    cmd = _codex_start_cmd(command, spec, runtime_dir, 'sess-model')
 
     assert 'codex -c disable_paste_burst=true -m gpt-5 --search' in cmd
 
@@ -1427,10 +1545,18 @@ def test_codex_launcher_build_start_cmd_uses_agent_scoped_resume_session(monkeyp
     runtime_dir.mkdir(parents=True, exist_ok=True)
     ccb_dir = project_root / '.ccb'
     ccb_dir.mkdir(parents=True, exist_ok=True)
+    spec = _spec('agent1')
+    command = ParsedStartCommand(project=None, agent_names=('agent1',), restore=True, auto_permission=False)
+
+    monkeypatch.delenv('CODEX_HOME', raising=False)
+    _write_project_memory(project_root, 'shared memory\n')
+    prepared = _prepare_codex_home_for_test(spec, runtime_dir)
+    marker = json.loads((runtime_dir / 'codex-memory-projection.json').read_text(encoding='utf-8'))
     (ccb_dir / '.codex-agent1-session').write_text(
         json.dumps(
             {
                 'codex_session_id': 'agent1-session-id',
+                'codex_memory_projection_sha256': marker['sha256'],
                 'codex_start_cmd': 'codex resume agent1-session-id',
             },
             ensure_ascii=False,
@@ -1442,6 +1568,7 @@ def test_codex_launcher_build_start_cmd_uses_agent_scoped_resume_session(monkeyp
         json.dumps(
             {
                 'codex_session_id': 'agent2-session-id',
+                'codex_memory_projection_sha256': marker['sha256'],
                 'codex_start_cmd': 'codex resume agent2-session-id',
             },
             ensure_ascii=False,
@@ -1450,12 +1577,7 @@ def test_codex_launcher_build_start_cmd_uses_agent_scoped_resume_session(monkeyp
         encoding='utf-8',
     )
 
-    spec = _spec('agent1')
-    command = ParsedStartCommand(project=None, agent_names=('agent1',), restore=True, auto_permission=False)
-
-    monkeypatch.delenv('CODEX_HOME', raising=False)
-
-    cmd = codex_launcher.build_start_cmd(command, spec, runtime_dir, 'sess-restore')
+    cmd = codex_launcher.build_start_cmd(command, spec, runtime_dir, 'sess-restore', prepared_state=prepared)
 
     assert cmd.endswith('resume agent1-session-id')
     assert 'agent2-session-id' not in cmd
@@ -1467,10 +1589,11 @@ def test_codex_launcher_build_start_cmd_reads_resume_cmd_from_agent_scoped_sessi
     runtime_dir.mkdir(parents=True, exist_ok=True)
     ccb_dir = project_root / '.ccb'
     ccb_dir.mkdir(parents=True, exist_ok=True)
+    demo_home = tmp_path / 'demo-codex-home'
     (ccb_dir / '.codex-codex-session').write_text(
         json.dumps(
             {
-                'codex_start_cmd': 'export CODEX_HOME=/tmp/demo; codex -c disable_paste_burst=true resume codex-session-id',
+                'codex_start_cmd': f'export CODEX_HOME={shlex.quote(str(demo_home))}; codex -c disable_paste_burst=true resume codex-session-id',
             },
             ensure_ascii=False,
             indent=2,
@@ -1481,7 +1604,7 @@ def test_codex_launcher_build_start_cmd_reads_resume_cmd_from_agent_scoped_sessi
     spec = _spec('codex')
     command = ParsedStartCommand(project=None, agent_names=('codex',), restore=True, auto_permission=False)
 
-    cmd = codex_launcher.build_start_cmd(command, spec, runtime_dir, 'sess-restore')
+    cmd = _codex_start_cmd(command, spec, runtime_dir, 'sess-restore')
 
     assert cmd.endswith('resume codex-session-id')
 
@@ -1517,7 +1640,13 @@ def test_claude_launcher_build_start_cmd_uses_overlay_and_drops_dead_local_user_
         lambda **kwargs: ProviderRestoreTarget(run_cwd=runtime_dir, has_history=True),
     )
 
-    start_cmd = claude_launcher.build_start_cmd(command, spec, runtime_dir, 'claude-sess-1')
+    start_cmd = claude_launcher.build_start_cmd(
+        command,
+        spec,
+        runtime_dir,
+        'claude-sess-1',
+        prepared_state=_claude_prepared_state(runtime_dir),
+    )
 
     assert start_cmd.startswith('unset ANTHROPIC_BASE_URL; ')
     assert 'HOME=' in start_cmd
@@ -1551,9 +1680,170 @@ def test_claude_launcher_build_start_cmd_includes_agent_model_shortcut(tmp_path:
     )
     command = ParsedStartCommand(project=None, agent_names=('reviewer',), restore=False, auto_permission=False)
 
-    start_cmd = claude_launcher.build_start_cmd(command, spec, runtime_dir, 'claude-sess-model')
+    start_cmd = claude_launcher.build_start_cmd(
+        command,
+        spec,
+        runtime_dir,
+        'claude-sess-model',
+        prepared_state=_claude_prepared_state(runtime_dir),
+    )
 
     assert start_cmd.endswith('claude --setting-sources user,project,local --model opus')
+
+
+def test_claude_launcher_build_start_cmd_requires_launch_context(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / 'runtime-claude-missing-context'
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    spec = _spec('reviewer', provider='claude')
+    command = ParsedStartCommand(project=None, agent_names=('reviewer',), restore=False, auto_permission=False)
+
+    with pytest.raises(RuntimeError, match='prepare_launch_context'):
+        claude_launcher.build_start_cmd(command, spec, runtime_dir, 'claude-sess-missing-context')
+
+
+@pytest.mark.parametrize(
+    ('provider', 'launcher', 'session_id'),
+    (
+        ('droid', droid_launcher, 'droid-sess-prepared'),
+    ),
+)
+def test_non_claude_build_start_cmd_accepts_prepared_state_keyword(
+    provider: str,
+    launcher,
+    session_id: str,
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / provider / 'runtime'
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    spec = _spec('agent1', provider=provider)
+    command = ParsedStartCommand(project=None, agent_names=('agent1',), restore=False, auto_permission=False)
+
+    launcher.build_start_cmd(command, spec, runtime_dir, session_id, prepared_state={})
+    launcher.build_start_cmd(command, spec, runtime_dir, session_id, prepared_state=None)
+
+
+def test_codex_launcher_build_start_cmd_requires_launch_context(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / 'runtime-codex-missing-context'
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    spec = _spec('agent1', provider='codex')
+    command = ParsedStartCommand(project=None, agent_names=('agent1',), restore=False, auto_permission=False)
+
+    with pytest.raises(RuntimeError, match='prepare_launch_context'):
+        codex_launcher.build_start_cmd(command, spec, runtime_dir, 'codex-sess-missing-context')
+
+
+def test_opencode_launcher_build_start_cmd_requires_launch_context(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / 'runtime-opencode-missing-context'
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    spec = _spec('agent1', provider='opencode')
+    command = ParsedStartCommand(project=None, agent_names=('agent1',), restore=False, auto_permission=False)
+
+    with pytest.raises(RuntimeError, match='prepare_launch_context'):
+        opencode_launcher.build_start_cmd(command, spec, runtime_dir, 'opencode-sess-missing-context')
+
+
+def test_gemini_launcher_build_start_cmd_requires_launch_context(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / 'runtime-gemini-missing-context'
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    spec = _spec('agent1', provider='gemini')
+    command = ParsedStartCommand(project=None, agent_names=('agent1',), restore=False, auto_permission=False)
+
+    with pytest.raises(RuntimeError, match='prepare_launch_context'):
+        gemini_launcher.build_start_cmd(command, spec, runtime_dir, 'gemini-sess-missing-context')
+
+
+def test_opencode_workspace_preparation_writes_memory_config(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / 'repo-opencode-memory'
+    runtime_dir = project_root / '.ccb' / 'agents' / 'builder' / 'provider-runtime' / 'opencode'
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    project_root.mkdir(parents=True, exist_ok=True)
+    _write_project_memory(project_root, 'shared ask memory\n')
+    (project_root / 'AGENTS.md').write_text('project opencode memory\n', encoding='utf-8')
+    (project_root / 'opencode.json').write_text(
+        json.dumps({'provider': 'anthropic', 'instructions': ['AGENTS.md']}, ensure_ascii=False, indent=2),
+        encoding='utf-8',
+    )
+    monkeypatch.setenv('OPENCODE_START_CMD', 'opencode')
+    spec = _spec('builder', provider='opencode')
+    command = ParsedStartCommand(project=None, agent_names=('builder',), restore=True, auto_permission=False)
+    prepared = _prepare_opencode_workspace_for_test(spec, runtime_dir)
+
+    cmd = opencode_launcher.build_start_cmd(
+        command,
+        spec,
+        runtime_dir,
+        'opencode-sess-memory',
+        prepared_state=prepared,
+    )
+
+    config_path = project_root / '.ccb' / 'agents' / 'builder' / 'provider-state' / 'opencode' / 'opencode.json'
+    bundle_path = project_root / '.ccb' / 'runtime' / 'memory' / 'builder.md'
+    config = json.loads(config_path.read_text(encoding='utf-8'))
+    assert f'OPENCODE_CONFIG={shlex.quote(str(config_path))}' in cmd
+    assert cmd.endswith('opencode --continue')
+    assert config['provider'] == 'anthropic'
+    assert config['instructions'] == ['AGENTS.md', '.ccb/runtime/memory/builder.md']
+    bundle_text = bundle_path.read_text(encoding='utf-8')
+    assert 'shared ask memory' in bundle_text
+    assert 'project opencode memory' in bundle_text
+
+
+def test_opencode_workspace_preparation_records_memory_projection_once(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / 'repo-opencode-events'
+    runtime_dir = project_root / '.ccb' / 'agents' / 'agent1' / 'provider-runtime' / 'opencode'
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    project_root.mkdir(parents=True, exist_ok=True)
+    _write_project_memory(project_root, 'shared ask memory\n')
+    monkeypatch.setenv('OPENCODE_START_CMD', 'opencode')
+    spec = _spec('agent1', provider='opencode')
+
+    _prepare_opencode_workspace_for_test(spec, runtime_dir)
+    _prepare_opencode_workspace_for_test(spec, runtime_dir)
+
+    events = [
+        json.loads(line)
+        for line in (project_root / '.ccb' / 'agents' / 'agent1' / 'events.jsonl').read_text(encoding='utf-8').splitlines()
+        if line.strip()
+    ]
+    memory_events = [event for event in events if str(event.get('event_type', '')).startswith('opencode_memory_projection_')]
+    assert len(memory_events) == 1
+    assert memory_events[0]['event_type'] == 'opencode_memory_projection_ok'
+    assert memory_events[0]['projection_path'].endswith('/.ccb/runtime/memory/agent1.md')
+    assert memory_events[0]['config_path'].endswith('/.ccb/agents/agent1/provider-state/opencode/opencode.json')
+    assert memory_events[0]['bundle_path'].endswith('/.ccb/runtime/memory/agent1.md')
+    assert memory_events[0]['sha256']
+
+
+def test_opencode_workspace_preparation_respects_inherit_memory_flag(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / 'repo-opencode-inherit-memory'
+    runtime_dir = project_root / '.ccb' / 'agents' / 'agent1' / 'provider-runtime' / 'opencode'
+    config_path = project_root / '.ccb' / 'agents' / 'agent1' / 'provider-state' / 'opencode' / 'opencode.json'
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text('{"instructions":["stale.md"]}\n', encoding='utf-8')
+    _write_provider_profile(
+        runtime_dir,
+        ResolvedProviderProfile(
+            provider='opencode',
+            agent_name='agent1',
+            inherit_memory=False,
+        ),
+    )
+    monkeypatch.setenv('OPENCODE_START_CMD', 'opencode')
+    spec = _spec('agent1', provider='opencode')
+    command = ParsedStartCommand(project=None, agent_names=('agent1',), restore=False, auto_permission=False)
+    prepared = _prepare_opencode_workspace_for_test(spec, runtime_dir)
+
+    cmd = opencode_launcher.build_start_cmd(
+        command,
+        spec,
+        runtime_dir,
+        'opencode-sess-inherit-memory',
+        prepared_state=prepared,
+    )
+
+    assert 'OPENCODE_CONFIG=' not in cmd
+    assert not config_path.exists()
 
 
 
@@ -1576,7 +1866,7 @@ def test_codex_launcher_build_start_cmd_uses_materialized_profile_home(monkeypat
     spec = _spec('agent1')
     command = ParsedStartCommand(project=None, agent_names=('agent1',), restore=False, auto_permission=False)
 
-    cmd = codex_launcher.build_start_cmd(command, spec, runtime_dir, 'sess-profile')
+    cmd = _codex_start_cmd(command, spec, runtime_dir, 'sess-profile')
 
     assert 'unset OPENAI_API_KEY' in cmd
     assert f'CODEX_HOME={shlex.quote(str(profile_home))}' in cmd
@@ -1637,7 +1927,7 @@ def test_codex_launcher_build_start_cmd_api_override_clears_global_route_config(
     spec = _spec('agent1')
     command = ParsedStartCommand(project=None, agent_names=('agent1',), restore=False, auto_permission=False)
 
-    cmd = codex_launcher.build_start_cmd(command, spec, runtime_dir, 'sess-profile-override')
+    cmd = _codex_start_cmd(command, spec, runtime_dir, 'sess-profile-override')
 
     assert 'unset OPENAI_API_KEY' in cmd
     assert 'unset OPENAI_BASE_URL' in cmd
@@ -1690,9 +1980,79 @@ def test_codex_launcher_build_start_cmd_skips_resume_when_explicit_api_authority
     spec = _spec('agent1')
     command = ParsedStartCommand(project=None, agent_names=('agent1',), restore=True, auto_permission=False)
 
-    cmd = codex_launcher.build_start_cmd(command, spec, runtime_dir, 'sess-authority-change')
+    cmd = _codex_start_cmd(command, spec, runtime_dir, 'sess-authority-change')
 
     assert 'resume legacy-session-id' not in cmd
+
+
+def test_codex_launcher_build_start_cmd_skips_resume_when_memory_projection_changed(
+    monkeypatch, tmp_path: Path
+) -> None:
+    project_root = tmp_path / 'repo-codex-memory-authority'
+    runtime_dir = project_root / '.ccb' / 'agents' / 'agent1' / 'provider-runtime' / 'codex'
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    source_home = tmp_path / 'source-home'
+    source_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv('CODEX_HOME', str(source_home))
+    _write_project_memory(project_root, 'new shared memory\n')
+
+    codex_home = project_root / '.ccb' / 'agents' / 'agent1' / 'provider-state' / 'codex' / 'home'
+    session_root = codex_home / 'sessions'
+    old_log = session_root / '2026' / '05' / '01' / 'legacy-session.jsonl'
+    old_log.parent.mkdir(parents=True, exist_ok=True)
+    old_log.write_text('', encoding='utf-8')
+    (codex_home / '.ccb-session-namespace.json').write_text(
+        json.dumps(
+            {
+                'provider': 'codex',
+                'provider_authority_fingerprint': '',
+                'memory_projection_sha256': 'old-memory-sha',
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding='utf-8',
+    )
+    ccb_dir = project_root / '.ccb'
+    ccb_dir.mkdir(parents=True, exist_ok=True)
+    session_file = ccb_dir / '.codex-agent1-session'
+    resume_cmd = (
+        f'export CODEX_HOME={shlex.quote(str(codex_home))} '
+        f'CODEX_SESSION_ROOT={shlex.quote(str(session_root))}; '
+        'codex -c disable_paste_burst=true resume legacy-session-id'
+    )
+    session_file.write_text(
+        json.dumps(
+            {
+                'codex_home': str(codex_home),
+                'codex_session_root': str(session_root),
+                'codex_session_id': 'legacy-session-id',
+                'codex_session_path': str(old_log),
+                'codex_memory_projection_sha256': 'old-memory-sha',
+                'start_cmd': resume_cmd,
+                'codex_start_cmd': resume_cmd,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding='utf-8',
+    )
+
+    spec = _spec('agent1')
+    command = ParsedStartCommand(project=None, agent_names=('agent1',), restore=True, auto_permission=False)
+
+    cmd = _codex_start_cmd(command, spec, runtime_dir, 'sess-memory-change')
+
+    assert 'resume legacy-session-id' not in cmd
+    data = json.loads(session_file.read_text(encoding='utf-8'))
+    assert data['old_codex_session_id'] == 'legacy-session-id'
+    assert 'codex_session_id' not in data
+    assert 'resume legacy-session-id' not in data['start_cmd']
+    assert not any(session_root.iterdir())
+    assert any((codex_home / 'archived-sessions').rglob('legacy-session.jsonl'))
+    marker = json.loads((codex_home / '.ccb-session-namespace.json').read_text(encoding='utf-8'))
+    assert marker['memory_projection_sha256']
+    assert marker['memory_projection_sha256'] != 'old-memory-sha'
 
 
 def test_codex_launcher_build_start_cmd_skips_resume_when_explicit_api_binding_proof_missing(tmp_path: Path) -> None:
@@ -1736,7 +2096,7 @@ def test_codex_launcher_build_start_cmd_skips_resume_when_explicit_api_binding_p
     spec = _spec('agent1')
     command = ParsedStartCommand(project=None, agent_names=('agent1',), restore=True, auto_permission=False)
 
-    cmd = codex_launcher.build_start_cmd(command, spec, runtime_dir, 'sess-binding-proof-missing')
+    cmd = _codex_start_cmd(command, spec, runtime_dir, 'sess-binding-proof-missing')
 
     assert 'resume legacy-session-id' not in cmd
 
@@ -1802,7 +2162,7 @@ def test_codex_launcher_build_start_cmd_rotates_legacy_explicit_session_namespac
     spec = _spec('agent1')
     command = ParsedStartCommand(project=None, agent_names=('agent1',), restore=True, auto_permission=False)
 
-    cmd = codex_launcher.build_start_cmd(command, spec, runtime_dir, 'sess-legacy-explicit-namespace')
+    cmd = _codex_start_cmd(command, spec, runtime_dir, 'sess-legacy-explicit-namespace')
 
     assert 'resume legacy-session-id' not in cmd
     assert session_root.is_dir()
@@ -1831,7 +2191,7 @@ def test_codex_launcher_build_start_cmd_exports_inherited_api_env(monkeypatch, t
     spec = _spec('agent1')
     command = ParsedStartCommand(project=None, agent_names=('agent1',), restore=False, auto_permission=False)
 
-    cmd = codex_launcher.build_start_cmd(command, spec, runtime_dir, 'sess-inherit-api')
+    cmd = _codex_start_cmd(command, spec, runtime_dir, 'sess-inherit-api')
 
     assert f'OPENAI_API_KEY={shlex.quote("env-key")}' in cmd
     assert f'OPENAI_BASE_URL={shlex.quote("https://api.example.test/v1")}' in cmd
@@ -1854,7 +2214,7 @@ def test_codex_launcher_build_start_cmd_exports_user_session_transport_without_r
     spec = _spec('agent1')
     command = ParsedStartCommand(project=None, agent_names=('agent1',), restore=False, auto_permission=False)
 
-    cmd = codex_launcher.build_start_cmd(command, spec, runtime_dir, 'sess-transport')
+    cmd = _codex_start_cmd(command, spec, runtime_dir, 'sess-transport')
 
     assert f'HTTPS_PROXY={shlex.quote("http://127.0.0.1:7890")}' in cmd
     assert f'NO_PROXY={shlex.quote("localhost,127.0.0.1")}' in cmd
@@ -1884,7 +2244,7 @@ def test_codex_launcher_build_start_cmd_refreshes_managed_home_projection(monkey
     spec = _spec('agent1')
     command = ParsedStartCommand(project=None, agent_names=('agent1',), restore=False, auto_permission=False)
 
-    codex_launcher.build_start_cmd(command, spec, runtime_dir, 'sess-refresh-1')
+    _codex_start_cmd(command, spec, runtime_dir, 'sess-refresh-1')
 
     isolated_home = runtime_dir / 'codex-state' / 'home'
     assert (isolated_home / 'config.toml').read_text(encoding='utf-8') == 'model = "gpt-5"\n'
@@ -1904,7 +2264,7 @@ def test_codex_launcher_build_start_cmd_refreshes_managed_home_projection(monkey
         skill_body='plugin skill v2\n',
     )
 
-    codex_launcher.build_start_cmd(command, spec, runtime_dir, 'sess-refresh-2')
+    _codex_start_cmd(command, spec, runtime_dir, 'sess-refresh-2')
 
     assert (isolated_home / 'config.toml').read_text(encoding='utf-8') == 'model = "gpt-5.1"\n'
     assert (isolated_home / 'auth.json').read_text(encoding='utf-8') == '{"OPENAI_API_KEY":"new-key"}\n'
@@ -1940,7 +2300,7 @@ def test_codex_launcher_build_start_cmd_reuses_legacy_codex_home_from_persisted_
     spec = _spec('agent1')
     command = ParsedStartCommand(project=None, agent_names=('agent1',), restore=False, auto_permission=False)
 
-    cmd = codex_launcher.build_start_cmd(command, spec, runtime_dir, 'sess-legacy-home')
+    cmd = _codex_start_cmd(command, spec, runtime_dir, 'sess-legacy-home')
 
     assert f'CODEX_HOME={shlex.quote(str(legacy_home))}' in cmd
     assert f'CODEX_SESSION_ROOT={shlex.quote(str(legacy_home / "sessions"))}' in cmd
@@ -1970,7 +2330,7 @@ def test_codex_launcher_build_start_cmd_reuses_legacy_session_root_from_persiste
     spec = _spec('agent1')
     command = ParsedStartCommand(project=None, agent_names=('agent1',), restore=False, auto_permission=False)
 
-    cmd = codex_launcher.build_start_cmd(command, spec, runtime_dir, 'sess-legacy-root')
+    cmd = _codex_start_cmd(command, spec, runtime_dir, 'sess-legacy-root')
 
     migrated_home = legacy_root.parent / 'home'
     migrated_root = migrated_home / 'sessions'
@@ -2021,7 +2381,13 @@ def test_claude_launcher_build_start_cmd_uses_isolated_profile_api_env(monkeypat
         lambda **kwargs: ProviderRestoreTarget(run_cwd=runtime_dir, has_history=True),
     )
 
-    start_cmd = claude_launcher.build_start_cmd(command, spec, runtime_dir, 'claude-sess-iso')
+    start_cmd = claude_launcher.build_start_cmd(
+        command,
+        spec,
+        runtime_dir,
+        'claude-sess-iso',
+        prepared_state=_claude_prepared_state(runtime_dir),
+    )
 
     assert 'unset ANTHROPIC_AUTH_TOKEN' in start_cmd
     assert f'ANTHROPIC_AUTH_TOKEN={shlex.quote("profile-token")}' in start_cmd
@@ -2067,7 +2433,13 @@ def test_claude_launcher_build_start_cmd_uses_agent_settings_overlay_when_presen
         lambda **kwargs: ProviderRestoreTarget(run_cwd=runtime_dir, has_history=False),
     )
 
-    start_cmd = claude_launcher.build_start_cmd(command, spec, runtime_dir, 'claude-sess-local')
+    start_cmd = claude_launcher.build_start_cmd(
+        command,
+        spec,
+        runtime_dir,
+        'claude-sess-local',
+        prepared_state=_claude_prepared_state(runtime_dir),
+    )
 
     settings_path = runtime_dir / 'claude-settings.json'
     _assert_caller_env_exports(
@@ -2082,9 +2454,10 @@ def test_claude_launcher_build_start_cmd_uses_agent_settings_overlay_when_presen
     assert json.loads(settings_path.read_text(encoding='utf-8')) == {'model': 'opus'}
 
 
-def test_claude_launcher_build_start_cmd_uses_materialized_profile_home(monkeypatch, tmp_path: Path) -> None:
+def test_claude_launcher_build_start_cmd_ignores_profile_runtime_home(monkeypatch, tmp_path: Path) -> None:
     runtime_dir = tmp_path / 'runtime'
     profile_home = tmp_path / 'claude-profile-home'
+    managed_home = runtime_dir / 'claude-home'
     runtime_dir.mkdir(parents=True, exist_ok=True)
     _write_provider_profile(
         runtime_dir,
@@ -2109,10 +2482,12 @@ def test_claude_launcher_build_start_cmd_uses_materialized_profile_home(monkeypa
         _spec('reviewer', provider='claude'),
         runtime_dir,
         'claude-sess-home',
+        prepared_state=_claude_prepared_state(runtime_dir),
     )
 
-    assert f'HOME={shlex.quote(str(profile_home))}' in start_cmd
-    assert f'CLAUDE_PROJECTS_ROOT={shlex.quote(str(profile_home / ".claude" / "projects"))}' in start_cmd
+    assert f'HOME={shlex.quote(str(managed_home))}' in start_cmd
+    assert f'CLAUDE_PROJECTS_ROOT={shlex.quote(str(managed_home / ".claude" / "projects"))}' in start_cmd
+    assert str(profile_home) not in start_cmd
 
 
 def test_claude_launcher_build_start_cmd_exports_user_session_transport_without_runtime_leaks(
@@ -2140,7 +2515,13 @@ def test_claude_launcher_build_start_cmd_exports_user_session_transport_without_
     spec = _spec('reviewer', provider='claude')
     command = ParsedStartCommand(project=None, agent_names=('reviewer',), restore=False, auto_permission=False)
 
-    start_cmd = claude_launcher.build_start_cmd(command, spec, runtime_dir, 'claude-sess-transport')
+    start_cmd = claude_launcher.build_start_cmd(
+        command,
+        spec,
+        runtime_dir,
+        'claude-sess-transport',
+        prepared_state=_claude_prepared_state(runtime_dir),
+    )
 
     managed_projects = project_root / '.ccb' / 'agents' / 'reviewer' / 'provider-state' / 'claude' / 'home' / '.claude' / 'projects'
     assert f'HTTPS_PROXY={shlex.quote("http://127.0.0.1:7890")}' in start_cmd
@@ -2151,7 +2532,7 @@ def test_claude_launcher_build_start_cmd_exports_user_session_transport_without_
     assert 'CCB_CALLER_ACTOR=stale-agent' not in start_cmd
 
 
-def test_claude_launcher_build_start_cmd_refreshes_managed_home_projection(monkeypatch, tmp_path: Path) -> None:
+def test_claude_workspace_preparation_refreshes_managed_home_projection(monkeypatch, tmp_path: Path) -> None:
     project_root = tmp_path / 'repo-claude-refresh'
     runtime_dir = project_root / '.ccb' / 'agents' / 'reviewer' / 'provider-runtime' / 'claude'
     runtime_dir.mkdir(parents=True, exist_ok=True)
@@ -2165,6 +2546,8 @@ def test_claude_launcher_build_start_cmd_refreshes_managed_home_projection(monke
 
     spec = _spec('reviewer', provider='claude')
     command = ParsedStartCommand(project=None, agent_names=('reviewer',), restore=False, auto_permission=False)
+    context = _context(project_root, command)
+    plan = WorkspacePlanner().plan(spec, context.project)
 
     monkeypatch.setattr('provider_backends.claude.launcher.Path.home', lambda: home_dir)
     monkeypatch.setattr('provider_backends.claude.launcher_runtime.home.Path.home', lambda: home_dir)
@@ -2175,22 +2558,98 @@ def test_claude_launcher_build_start_cmd_refreshes_managed_home_projection(monke
         lambda **kwargs: ProviderRestoreTarget(run_cwd=runtime_dir, has_history=False),
     )
 
-    claude_launcher.build_start_cmd(command, spec, runtime_dir, 'claude-sess-refresh-1')
+    _prepare_claude_home_for_test(spec, runtime_dir, workspace_path=runtime_dir)
+    prepared = claude_launcher.prepare_launch_context(context, spec, plan, runtime_dir, {})
+    claude_launcher.build_start_cmd(
+        command,
+        spec,
+        runtime_dir,
+        'claude-sess-refresh-1',
+        prepared_state=prepared,
+    )
 
     managed_claude_dir = project_root / '.ccb' / 'agents' / 'reviewer' / 'provider-state' / 'claude' / 'home' / '.claude'
     assert (managed_claude_dir / 'skills' / 'review' / 'SKILL.md').read_text(encoding='utf-8') == 'skill-v1\n'
     assert (managed_claude_dir / 'commands' / 'check.md').read_text(encoding='utf-8') == 'command-v1\n'
-    assert (managed_claude_dir / 'CLAUDE.md').read_text(encoding='utf-8') == 'claude-md-v1\n'
+    claude_memory_v1 = (managed_claude_dir / 'CLAUDE.md').read_text(encoding='utf-8')
+    assert '# CCB Managed Agent Memory' in claude_memory_v1
+    assert 'claude-md-v1' in claude_memory_v1
+    assert 'This project is managed by CCB as a visible multi-agent workspace.' in _project_memory_path(
+        project_root
+    ).read_text(encoding='utf-8')
 
     (source_claude_dir / 'skills' / 'review' / 'SKILL.md').write_text('skill-v2\n', encoding='utf-8')
     (source_claude_dir / 'commands' / 'check.md').write_text('command-v2\n', encoding='utf-8')
     (source_claude_dir / 'CLAUDE.md').write_text('claude-md-v2\n', encoding='utf-8')
 
-    claude_launcher.build_start_cmd(command, spec, runtime_dir, 'claude-sess-refresh-2')
+    _prepare_claude_home_for_test(spec, runtime_dir, workspace_path=runtime_dir)
+    prepared = claude_launcher.prepare_launch_context(context, spec, plan, runtime_dir, {})
+    claude_launcher.build_start_cmd(
+        command,
+        spec,
+        runtime_dir,
+        'claude-sess-refresh-2',
+        prepared_state=prepared,
+    )
 
     assert (managed_claude_dir / 'skills' / 'review' / 'SKILL.md').read_text(encoding='utf-8') == 'skill-v2\n'
     assert (managed_claude_dir / 'commands' / 'check.md').read_text(encoding='utf-8') == 'command-v2\n'
-    assert (managed_claude_dir / 'CLAUDE.md').read_text(encoding='utf-8') == 'claude-md-v2\n'
+    claude_memory_v2 = (managed_claude_dir / 'CLAUDE.md').read_text(encoding='utf-8')
+    assert '# CCB Managed Agent Memory' in claude_memory_v2
+    assert 'claude-md-v2' in claude_memory_v2
+
+
+def test_claude_launcher_project_memory_survives_relocated_runtime_state(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / 'repo-relocated'
+    runtime_root = tmp_path / 'external-runtime'
+    command = ParsedStartCommand(project=None, agent_names=('reviewer',), restore=False, auto_permission=False)
+    context = _context(project_root, command)
+    object.__setattr__(context.paths, '_state_root', runtime_root)
+    spec = _spec('reviewer', provider='claude')
+    plan = WorkspacePlanner().plan(spec, context.project)
+    runtime_dir = context.paths.agent_provider_runtime_dir('reviewer', 'claude')
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    home_dir = tmp_path / 'home'
+    source_claude_dir = home_dir / '.claude'
+    source_claude_dir.mkdir(parents=True, exist_ok=True)
+    (source_claude_dir / 'CLAUDE.md').write_text('claude relocated source memory\n', encoding='utf-8')
+    _write_project_memory(project_root, 'relocated shared memory\n')
+    monkeypatch.setattr('provider_backends.claude.launcher.Path.home', lambda: home_dir)
+    monkeypatch.setattr('provider_backends.claude.launcher_runtime.home.Path.home', lambda: home_dir)
+    monkeypatch.setenv('CCB_SOURCE_HOME', str(home_dir))
+    monkeypatch.setattr(
+        claude_launcher,
+        '_resolve_claude_restore_target',
+        lambda **kwargs: ProviderRestoreTarget(run_cwd=plan.workspace_path, has_history=False),
+    )
+
+    from cli.services.provider_hooks import prepare_provider_workspace
+
+    prepare_provider_workspace(
+        layout=context.paths,
+        spec=spec,
+        workspace_path=plan.workspace_path,
+        completion_dir=runtime_dir / 'completion',
+        agent_name=spec.name,
+        refresh_profile=False,
+    )
+    prepared = claude_launcher.prepare_launch_context(context, spec, plan, runtime_dir, {})
+    claude_launcher.build_start_cmd(
+        command,
+        spec,
+        runtime_dir,
+        'claude-sess-relocated',
+        prepared_state=prepared,
+    )
+
+    managed_memory = runtime_root / 'agents' / 'reviewer' / 'provider-state' / 'claude' / 'home' / '.claude' / 'CLAUDE.md'
+    text = managed_memory.read_text(encoding='utf-8')
+    assert text.startswith('# CCB Managed Agent Memory')
+    assert 'relocated shared memory' in text
+    assert 'claude relocated source memory' in text
 
 
 def test_claude_launcher_build_start_cmd_preserves_managed_auth_when_system_home_logged_out(
@@ -2244,7 +2703,14 @@ def test_claude_launcher_build_start_cmd_preserves_managed_auth_when_system_home
         lambda **kwargs: ProviderRestoreTarget(run_cwd=runtime_dir, has_history=False),
     )
 
-    start_cmd = claude_launcher.build_start_cmd(command, spec, runtime_dir, 'claude-sess-auth-refresh')
+    prepared = _prepare_claude_home_for_test(spec, runtime_dir, workspace_path=runtime_dir)
+    start_cmd = claude_launcher.build_start_cmd(
+        command,
+        spec,
+        runtime_dir,
+        'claude-sess-auth-refresh',
+        prepared_state=prepared,
+    )
 
     payload = json.loads(managed_settings.read_text(encoding='utf-8'))
     assert payload['env']['ANTHROPIC_AUTH_TOKEN'] == 'managed-token'
@@ -2280,7 +2746,14 @@ def test_claude_launcher_build_start_cmd_projects_official_login_auth_into_manag
         lambda **kwargs: ProviderRestoreTarget(run_cwd=runtime_dir, has_history=False),
     )
 
-    claude_launcher.build_start_cmd(command, spec, runtime_dir, 'claude-sess-login-auth')
+    prepared = _prepare_claude_home_for_test(spec, runtime_dir, workspace_path=runtime_dir)
+    claude_launcher.build_start_cmd(
+        command,
+        spec,
+        runtime_dir,
+        'claude-sess-login-auth',
+        prepared_state=prepared,
+    )
 
     managed_auth = (
         project_root
@@ -2313,7 +2786,13 @@ def test_gemini_launcher_build_start_cmd_uses_isolated_profile_api_env(tmp_path:
     spec = _spec('reviewer', provider='gemini')
     command = ParsedStartCommand(project=None, agent_names=('reviewer',), restore=False, auto_permission=False)
 
-    start_cmd = gemini_launcher.build_start_cmd(command, spec, runtime_dir, 'gemini-sess-iso')
+    start_cmd = gemini_launcher.build_start_cmd(
+        command,
+        spec,
+        runtime_dir,
+        'gemini-sess-iso',
+        prepared_state={'project_root': tmp_path},
+    )
 
     assert 'unset GEMINI_API_KEY' in start_cmd
     assert f'GEMINI_API_KEY={shlex.quote("gemini-key")}' in start_cmd
@@ -2336,7 +2815,13 @@ def test_gemini_launcher_build_start_cmd_exports_user_session_transport_without_
     spec = _spec('reviewer', provider='gemini')
     command = ParsedStartCommand(project=None, agent_names=('reviewer',), restore=False, auto_permission=False)
 
-    start_cmd = gemini_launcher.build_start_cmd(command, spec, runtime_dir, 'gemini-sess-transport')
+    start_cmd = gemini_launcher.build_start_cmd(
+        command,
+        spec,
+        runtime_dir,
+        'gemini-sess-transport',
+        prepared_state={'project_root': project_root},
+    )
 
     managed_home = project_root / '.ccb' / 'agents' / 'reviewer' / 'provider-state' / 'gemini' / 'home'
     managed_root = managed_home / '.gemini' / 'tmp'

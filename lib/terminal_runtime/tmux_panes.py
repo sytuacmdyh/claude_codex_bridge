@@ -32,8 +32,16 @@ class TmuxPaneService:
     def get_current_pane_id(self, *, env_pane: str) -> str:
         return get_current_pane_id(self, env_pane=env_pane)
 
-    def split_pane(self, parent_pane_id: str, *, direction: str, percent: int) -> str:
-        return split_pane(self, parent_pane_id, direction=direction, percent=percent)
+    def split_pane(
+        self,
+        parent_pane_id: str,
+        *,
+        direction: str,
+        percent: int,
+        cmd: str | None = None,
+        cwd: str | None = None,
+    ) -> str:
+        return split_pane(self, parent_pane_id, direction=direction, percent=percent, cmd=cmd, cwd=cwd)
 
     def set_pane_title(self, pane_id: str, title: str) -> None:
         set_pane_title(self, pane_id, title)

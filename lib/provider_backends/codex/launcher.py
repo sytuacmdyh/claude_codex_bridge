@@ -7,7 +7,10 @@ from cli.context import CliContext
 from cli.models import ParsedStartCommand
 from provider_core.contracts import ProviderRuntimeLauncher
 from provider_backends.codex.runtime_artifacts import codex_runtime_artifact_layout
-from provider_profiles.codex_home_config import codex_provider_authority_fingerprint
+from provider_backends.codex.session_authority import (
+    current_memory_projection_fingerprint,
+    current_provider_authority_fingerprint,
+)
 from provider_profiles import load_resolved_provider_profile
 from workspace.models import WorkspacePlan
 from .launcher_runtime import build_start_cmd as _build_start_cmd_impl
@@ -21,6 +24,7 @@ def build_runtime_launcher() -> ProviderRuntimeLauncher:
         provider='codex',
         launch_mode='codex_tmux',
         prepare_runtime=prepare_runtime,
+        prepare_launch_context=prepare_launch_context,
         build_start_cmd=build_start_cmd,
         build_session_payload=build_session_payload,
         post_launch=post_launch,
@@ -31,8 +35,31 @@ def prepare_runtime(runtime_dir: Path) -> dict[str, object]:
     return _prepare_runtime_impl(runtime_dir)
 
 
-def build_start_cmd(command: ParsedStartCommand, spec: AgentSpec, runtime_dir: Path, launch_session_id: str) -> str:
-    return _build_start_cmd_impl(command, spec, runtime_dir, launch_session_id)
+def prepare_launch_context(
+    context: CliContext,
+    spec: AgentSpec,
+    plan: WorkspacePlan,
+    runtime_dir: Path,
+    prepared_state: dict[str, object],
+) -> dict[str, object]:
+    del runtime_dir
+    payload = dict(prepared_state)
+    payload['agent_name'] = spec.name
+    payload['project_root'] = str(context.project.project_root)
+    payload['workspace_path'] = str(prepared_state.get('run_cwd') or plan.workspace_path)
+    payload['agent_events_path'] = str(context.paths.agent_events_path(spec.name))
+    return payload
+
+
+def build_start_cmd(
+    command: ParsedStartCommand,
+    spec: AgentSpec,
+    runtime_dir: Path,
+    launch_session_id: str,
+    *,
+    prepared_state: dict[str, object] | None = None,
+) -> str:
+    return _build_start_cmd_impl(command, spec, runtime_dir, launch_session_id, prepared_state=prepared_state)
 
 
 def build_session_payload(
@@ -75,7 +102,10 @@ def build_session_payload(
     payload['codex_session_root'] = str(layout.session_root)
     if layout.codex_home is not None:
         payload['codex_home'] = str(layout.codex_home)
-    provider_authority_fingerprint = codex_provider_authority_fingerprint(profile)
+    memory_projection_fingerprint = current_memory_projection_fingerprint(runtime_dir)
+    if memory_projection_fingerprint:
+        payload['codex_memory_projection_sha256'] = memory_projection_fingerprint
+    provider_authority_fingerprint = current_provider_authority_fingerprint(profile)
     if provider_authority_fingerprint:
         payload['codex_provider_authority_fingerprint'] = provider_authority_fingerprint
     return payload

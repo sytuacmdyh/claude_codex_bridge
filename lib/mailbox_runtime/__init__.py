@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from .targets import (
-    CMD_ACTOR,
     NON_AGENT_ACTORS,
     NON_MAILBOX_ACTORS,
     USER_ACTOR,
@@ -12,7 +11,6 @@ from .targets import (
 )
 
 __all__ = [
-    'CMD_ACTOR',
     'NON_AGENT_ACTORS',
     'NON_MAILBOX_ACTORS',
     'USER_ACTOR',

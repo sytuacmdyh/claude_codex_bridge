@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from .common import display_text, render_mapping
+from .common import display_text, render_mapping, render_observer_notice
 
 
 def render_ask(summary) -> tuple[str, ...]:
@@ -93,6 +93,7 @@ def render_watch_batch(batch) -> tuple[str, ...]:
         lines.extend(
             [
                 'watch_status: terminal',
+                *render_observer_notice(view='watch', terminal=True),
                 f'job_id: {batch.job_id}',
                 f'agent_name: {batch.agent_name}',
                 f'target_name: {target}',

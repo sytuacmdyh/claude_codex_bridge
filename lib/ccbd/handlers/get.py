@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from completion.models import CompletionConfidence, CompletionDecision, CompletionStatus
+
 
 def _resolve_requested_job(dispatcher, payload: dict):
     job_id = payload.get('job_id')
@@ -11,8 +13,31 @@ def _resolve_requested_job(dispatcher, payload: dict):
     raise ValueError('get requires job_id or agent_name')
 
 
+def _terminal_decision_from_job(job) -> CompletionDecision | None:
+    record = job.terminal_decision
+    if not isinstance(record, dict):
+        return None
+    try:
+        return CompletionDecision(
+            terminal=bool(record['terminal']),
+            status=CompletionStatus(record['status']),
+            reason=record.get('reason'),
+            confidence=CompletionConfidence(record['confidence']) if record.get('confidence') is not None else None,
+            reply=record.get('reply', ''),
+            anchor_seen=bool(record.get('anchor_seen', False)),
+            reply_started=bool(record.get('reply_started', False)),
+            reply_stable=bool(record.get('reply_stable', False)),
+            provider_turn_ref=record.get('provider_turn_ref'),
+            source_cursor=None,
+            finished_at=record.get('finished_at'),
+            diagnostics=dict(record.get('diagnostics') or {}),
+        )
+    except Exception:
+        return None
+
+
 def _build_result_payload(job, snapshot) -> dict:
-    latest_decision = snapshot.latest_decision if snapshot is not None else None
+    latest_decision = _terminal_decision_from_job(job) or (snapshot.latest_decision if snapshot is not None else None)
     return {
         'job_id': job.job_id,
         'agent_name': job.agent_name,

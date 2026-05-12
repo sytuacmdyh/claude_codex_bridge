@@ -6,9 +6,11 @@ from cli.render import (
     render_ack,
     render_ask,
     render_cancel,
+    render_cleanup,
     render_config_validate,
     render_doctor,
     render_doctor_bundle,
+    render_doctor_storage,
     render_fault_arm,
     render_fault_clear,
     render_fault_list,
@@ -16,6 +18,7 @@ from cli.render import (
     render_kill,
     render_logs,
     render_mapping,
+    render_observer_notice,
     render_pend,
     render_ps,
     render_queue,
@@ -30,8 +33,10 @@ from cli.render import (
 from cli.services.ack import ack_reply
 from cli.services.ask import exit_code_for_ask_status, submit_ask, watch_ask_job, write_ask_output
 from cli.services.cancel import cancel_job
+from cli.services.cleanup import cleanup_project_storage
 from cli.services.config_validate import validate_config_context
 from cli.services.doctor import doctor_summary
+from cli.services.doctor_storage import doctor_storage_summary
 from cli.services.diagnostics import export_diagnostic_bundle
 from cli.services.fault import arm_fault_rule, clear_fault_rule, list_fault_rules
 from cli.services.inbox import inbox_target
@@ -55,8 +60,10 @@ def build_phase2_dispatch_services(**overrides):
         agent_logs=agent_logs,
         arm_fault_rule=arm_fault_rule,
         cancel_job=cancel_job,
+        cleanup_project_storage=cleanup_project_storage,
         clear_fault_rule=clear_fault_rule,
         doctor_summary=doctor_summary,
+        doctor_storage_summary=doctor_storage_summary,
         exit_code_for_ask_status=exit_code_for_ask_status,
         export_diagnostic_bundle=export_diagnostic_bundle,
         inbox_target=inbox_target,
@@ -69,9 +76,11 @@ def build_phase2_dispatch_services(**overrides):
         render_ack=render_ack,
         render_ask=render_ask,
         render_cancel=render_cancel,
+        render_cleanup=render_cleanup,
         render_config_validate=render_config_validate,
         render_doctor=render_doctor,
         render_doctor_bundle=render_doctor_bundle,
+        render_doctor_storage=render_doctor_storage,
         render_fault_arm=render_fault_arm,
         render_fault_clear=render_fault_clear,
         render_fault_list=render_fault_list,
@@ -79,6 +88,7 @@ def build_phase2_dispatch_services(**overrides):
         render_kill=render_kill,
         render_logs=render_logs,
         render_mapping=render_mapping,
+        render_observer_notice=render_observer_notice,
         render_pend=render_pend,
         render_ps=render_ps,
         render_queue=render_queue,

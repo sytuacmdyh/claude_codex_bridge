@@ -328,6 +328,11 @@ def test_dispatcher_routes_reply_into_registered_caller_mailbox(tmp_path: Path) 
     assert mailbox.mailbox_state is MailboxState.BLOCKED
     assert mailbox.queue_depth == 1
     assert mailbox.pending_reply_count == 1
+    queue_summary = dispatcher.queue('claude')
+    assert queue_summary['target'] == 'claude'
+    assert queue_summary['agent']['queue_depth'] == 1
+    assert queue_summary['agent']['pending_reply_count'] == 1
+    assert 'queued_events' not in queue_summary['agent']
 
 
 def test_dispatcher_silence_hides_success_reply_body_for_caller_mailbox(tmp_path: Path) -> None:
@@ -417,7 +422,7 @@ def test_dispatcher_silence_does_not_hide_failure_reply_body(tmp_path: Path) -> 
     assert replies[0].diagnostics.get('silence_on_success') is True
 
 
-def test_dispatcher_routes_cmd_reply_into_command_mailbox(tmp_path: Path) -> None:
+def test_dispatcher_rejects_cmd_sender(tmp_path: Path) -> None:
     project_root = tmp_path / 'repo-cmd-caller'
     ctx = _bootstrap_test_project(project_root)
     layout = PathLayout(project_root)
@@ -426,35 +431,19 @@ def test_dispatcher_routes_cmd_reply_into_command_mailbox(tmp_path: Path) -> Non
     registry.upsert(_runtime('codex', project_id=ctx.project_id, layout=layout, pid=101))
     dispatcher = JobDispatcher(layout, config, registry, clock=lambda: '2026-03-30T00:00:00Z')
 
-    receipt = dispatcher.submit(
-        MessageEnvelope(
-            project_id=ctx.project_id,
-            to_agent='codex',
-            from_actor='cmd',
-            body='hello from cmd',
-            task_id='task-cmd-1',
-            reply_to=None,
-            message_type='ask',
-            delivery_scope=DeliveryScope.SINGLE,
+    with pytest.raises(Exception, match='unknown sender agent: cmd'):
+        dispatcher.submit(
+            MessageEnvelope(
+                project_id=ctx.project_id,
+                to_agent='codex',
+                from_actor='cmd',
+                body='hello from cmd',
+                task_id='task-cmd-1',
+                reply_to=None,
+                message_type='ask',
+                delivery_scope=DeliveryScope.SINGLE,
+            )
         )
-    )
-    job_id = receipt.jobs[0].job_id
-    dispatcher.tick()
-    dispatcher.complete(job_id, _decision(reply='done for cmd'))
-
-    message = MessageStore(layout).list_all()[-1]
-    assert message.from_actor == 'cmd'
-    assert InboundEventStore(layout).list_agent('codex')[-1].event_type is InboundEventType.TASK_REQUEST
-    assert MailboxStore(layout).load('codex') is not None
-    queue_cmd = dispatcher.queue('cmd')
-    assert queue_cmd['target'] == 'cmd'
-    assert queue_cmd['agent']['agent_name'] == 'cmd'
-    assert queue_cmd['agent']['queue_depth'] == 1
-    assert queue_cmd['agent']['pending_reply_count'] == 1
-    assert queue_cmd['agent']['queued_events'][0]['event_type'] == 'task_reply'
-    assert dispatcher.inbox('cmd')['head']['reply'] == 'done for cmd'
-    queue_all = dispatcher.queue('all')
-    assert {item['agent_name'] for item in queue_all['agents']} == {'claude', 'cmd', 'codex', 'gemini'}
 
 
 def test_dispatcher_queue_summary_reflects_mailbox_state_and_pending_reply(tmp_path: Path) -> None:
@@ -482,7 +471,7 @@ def test_dispatcher_queue_summary_reflects_mailbox_state_and_pending_reply(tmp_p
     job_id = receipt.jobs[0].job_id
     dispatcher.tick()
 
-    queue_running = dispatcher.queue('codex')
+    queue_running = dispatcher.queue('codex', detail=True)
     agent_running = queue_running['agent']
     assert agent_running['agent_name'] == 'codex'
     assert agent_running['mailbox_state'] == 'delivering'
@@ -494,7 +483,7 @@ def test_dispatcher_queue_summary_reflects_mailbox_state_and_pending_reply(tmp_p
 
     dispatcher.complete(job_id, _decision(reply='reply for claude'))
 
-    queue_reply = dispatcher.queue('claude')
+    queue_reply = dispatcher.queue('claude', detail=True)
     agent_reply = queue_reply['agent']
     assert agent_reply['agent_name'] == 'claude'
     assert agent_reply['mailbox_state'] == 'blocked'
@@ -566,13 +555,8 @@ def test_dispatcher_queue_summary_ignores_stale_cmd_mailbox_residue(tmp_path: Pa
         encoding='utf-8',
     )
 
-    queue_cmd = dispatcher.queue('cmd')
-    assert queue_cmd['target'] == 'cmd'
-    assert queue_cmd['agent']['agent_name'] == 'cmd'
-    assert queue_cmd['agent']['queue_depth'] == 0
-    assert queue_cmd['agent']['pending_reply_count'] == 0
-    assert queue_cmd['agent']['runtime_state'] == 'stopped'
-    assert queue_cmd['agent']['runtime_health'] == 'stopped'
+    with pytest.raises(ValueError, match='unknown mailbox target: cmd'):
+        dispatcher.queue('cmd')
 
     queue_all = dispatcher.queue('all')
     assert {item['agent_name'] for item in queue_all['agents']} == {'claude', 'codex', 'gemini'}
@@ -1967,7 +1951,7 @@ def test_dispatcher_does_not_start_task_request_behind_pending_reply_head(tmp_pa
     assert current is not None
     assert current.status.value == 'accepted'
 
-    queue = dispatcher.queue('claude')
+    queue = dispatcher.queue('claude', detail=True)
     agent = queue['agent']
     assert agent['queue_depth'] == 2
     assert agent['queued_events'][0]['event_type'] == 'task_reply'
@@ -2006,13 +1990,16 @@ def test_dispatcher_inbox_exposes_head_reply_body_and_ack_drains_mailbox(tmp_pat
     assert inbox['item_count'] == 1
     assert inbox['head']['event_type'] == 'task_reply'
     assert inbox['head']['reply'] == 'done for inbox'
-    assert inbox['items'][0]['reply_preview'] == 'done for inbox'
+    assert inbox['items'] == []
+
+    inbox_detail = dispatcher.inbox('claude', detail=True)
+    assert inbox_detail['items'][0]['reply_preview'] == 'done for inbox'
 
     acked = dispatcher.ack_reply('claude')
 
     assert acked['acknowledged_inbound_event_id'] == inbox['head']['inbound_event_id']
     assert acked['reply'] == 'done for inbox'
-    queue = dispatcher.queue('claude')
+    queue = dispatcher.queue('claude', detail=True)
     assert queue['agent']['mailbox_state'] == 'idle'
     assert queue['agent']['queue_depth'] == 0
     assert queue['agent']['pending_reply_count'] == 0
@@ -2063,7 +2050,7 @@ def test_dispatcher_ack_reply_unblocks_next_task_request_after_tick(tmp_path: Pa
 
     assert len(started) == 1
     assert started[0].job_id == blocked_job_id
-    queue = dispatcher.queue('claude')
+    queue = dispatcher.queue('claude', detail=True)
     assert queue['agent']['mailbox_state'] == 'delivering'
     assert queue['agent']['active']['job_id'] == blocked_job_id
 
@@ -2131,7 +2118,7 @@ def test_dispatcher_pending_reply_on_one_agent_does_not_block_other_agent_start(
     assert blocked_state is not None and blocked_state.status.value == 'accepted'
     assert codex_state is not None and codex_state.status.value == 'running'
 
-    claude_queue = dispatcher.queue('claude')
+    claude_queue = dispatcher.queue('claude', detail=True)
     assert claude_queue['agent']['queue_depth'] == 2
     assert claude_queue['agent']['queued_events'][0]['event_type'] == 'task_reply'
     assert claude_queue['agent']['queued_events'][1]['job_id'] == blocked_job_id
@@ -2194,10 +2181,15 @@ def test_dispatcher_tick_promotes_head_reply_into_tracked_delivery_before_queued
     head_record = InboundEventStore(layout).get_latest('claude', inbox['head']['inbound_event_id'])
     assert head_record is not None
     assert delivery_job_id_from_payload(head_record.payload_ref) == delivery_job.job_id
+    mailbox = MailboxStore(layout).load('claude')
+    assert mailbox is not None
+    assert mailbox.summary_source == 'transition-claim'
+    assert mailbox.head_status == 'delivering'
+    assert delivery_job_id_from_payload(mailbox.head_payload_ref) == delivery_job.job_id
 
     dispatcher.complete(delivery_job.job_id, _decision(reply='reply delivered'))
 
-    queue_after = dispatcher.queue('claude')
+    queue_after = dispatcher.queue('claude', detail=True)
     assert queue_after['agent']['mailbox_state'] == 'blocked'
     assert queue_after['agent']['queue_depth'] == 1
     assert queue_after['agent']['queued_events'][0]['event_type'] == 'task_request'
@@ -2262,6 +2254,10 @@ def test_dispatcher_failed_reply_delivery_requeues_original_reply_head(tmp_path:
     head_record = InboundEventStore(layout).get_latest('claude', inbox['head']['inbound_event_id'])
     assert head_record is not None
     assert delivery_job_id_from_payload(head_record.payload_ref) is None
+    mailbox = MailboxStore(layout).load('claude')
+    assert mailbox is not None
+    assert mailbox.summary_source == 'transition-rewrite-head'
+    assert delivery_job_id_from_payload(mailbox.head_payload_ref) is None
 
 
 def test_dispatcher_ack_rejects_reply_after_auto_delivery_is_scheduled(tmp_path: Path) -> None:
@@ -2355,7 +2351,7 @@ def test_dispatcher_tick_auto_consumes_reply_delivery_head_with_execution_servic
     assert inbox_after['item_count'] == 1
     assert inbox_after['head']['event_type'] == 'task_request'
 
-    queue_after = dispatcher.queue('claude')
+    queue_after = dispatcher.queue('claude', detail=True)
     assert queue_after['agent']['mailbox_state'] == 'blocked'
     assert queue_after['agent']['queue_depth'] == 1
     assert queue_after['agent']['queued_events'][0]['event_type'] == 'task_request'
@@ -2470,3 +2466,76 @@ def test_dispatcher_tick_repairs_stale_running_reply_delivery_head_with_executio
     assert stale.status.value == 'incomplete'
     assert any(job.request.message_type == 'reply_delivery' and job.status.value == 'completed' for job in repaired)
     assert dispatcher.inbox('claude')['item_count'] == 0
+
+
+def test_dispatcher_shutdown_terminalizes_reply_delivery_without_spawning_replacement(tmp_path: Path) -> None:
+    project_root = tmp_path / 'repo-reply-delivery-shutdown'
+    ctx = _bootstrap_test_project(project_root)
+    layout = PathLayout(project_root)
+    config = _provider_config('codex', 'claude')
+    registry = AgentRegistry(layout, config)
+    registry.upsert(_runtime('codex', project_id=ctx.project_id, layout=layout, pid=101))
+    registry.upsert(_runtime('claude', project_id=ctx.project_id, layout=layout, pid=102))
+    execution_service = DeferredReplyDeliveryExecutionService()
+    dispatcher = JobDispatcher(
+        layout,
+        config,
+        registry,
+        execution_service=execution_service,
+        auto_reply_delivery_on_complete=True,
+        clock=lambda: '2026-03-30T00:00:00Z',
+    )
+
+    reply_receipt = dispatcher.submit(
+        MessageEnvelope(
+            project_id=ctx.project_id,
+            to_agent='codex',
+            from_actor='claude',
+            body='question for codex',
+            task_id='task-reply-shutdown',
+            reply_to=None,
+            message_type='ask',
+            delivery_scope=DeliveryScope.SINGLE,
+        )
+    )
+    reply_job_id = reply_receipt.jobs[0].job_id
+    dispatcher.tick()
+    dispatcher.complete(reply_job_id, _decision(reply='reply for claude'))
+
+    started = dispatcher.tick()
+    assert len(started) == 1
+    delivery_job = started[0]
+    assert delivery_job.request.message_type == 'reply_delivery'
+    assert delivery_job.status.value == 'running'
+
+    dispatcher.disable_auto_reply_delivery()
+    terminated = dispatcher.terminate_nonterminal_jobs(shutdown_reason='stop_all', forced=False)
+
+    assert len(terminated) == 1
+    terminal = dispatcher.get(delivery_job.job_id)
+    assert terminal is not None
+    assert terminal.status is JobStatus.INCOMPLETE
+    assert terminal.terminal_decision is not None
+    assert terminal.terminal_decision['reason'] == 'project_shutdown'
+    latest_by_job = {
+        record.job_id: record
+        for record in dispatcher._job_store.list_agent('claude')
+    }
+    reply_delivery_jobs = [
+        record
+        for record in latest_by_job.values()
+        if record.request.message_type == 'reply_delivery'
+    ]
+    pending_delivery_jobs = [
+        record
+        for record in reply_delivery_jobs
+        if record.status in {JobStatus.ACCEPTED, JobStatus.QUEUED, JobStatus.RUNNING}
+    ]
+    assert [record.job_id for record in reply_delivery_jobs] == [delivery_job.job_id]
+    assert pending_delivery_jobs == []
+    inbox = dispatcher.inbox('claude')
+    assert inbox['head'] is not None
+    head = InboundEventStore(layout).get_latest('claude', inbox['head']['inbound_event_id'])
+    assert head is not None
+    assert head.status is InboundEventStatus.QUEUED
+    assert delivery_job_id_from_payload(head.payload_ref) is None

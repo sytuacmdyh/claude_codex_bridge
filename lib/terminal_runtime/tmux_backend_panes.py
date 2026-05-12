@@ -69,11 +69,20 @@ class TmuxBackendPaneQueryMixin:
 
 
 class TmuxBackendPaneMutationMixin:
-    def split_pane(self, parent_pane_id: str, direction: str, percent: int) -> str:
+    def split_pane(
+        self,
+        parent_pane_id: str,
+        direction: str,
+        percent: int,
+        cmd: str | None = None,
+        cwd: str | None = None,
+    ) -> str:
         return self._services.pane_service.split_pane(
             parent_pane_id,
             direction=direction,
             percent=percent,
+            cmd=cmd,
+            cwd=cwd,
         )
 
     def set_pane_title(self, pane_id: str, title: str) -> None:

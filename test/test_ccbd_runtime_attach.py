@@ -272,6 +272,65 @@ def test_external_attach_preserves_restored_health() -> None:
     assert updated.binding_source is RuntimeBindingSource.EXTERNAL_ATTACH
 
 
+def test_external_attach_without_binding_refs_preserves_restored_health() -> None:
+    existing = _runtime(
+        state=AgentState.IDLE,
+        health='restored',
+        runtime_ref=None,
+        session_ref=None,
+        binding_source=RuntimeBindingSource.EXTERNAL_ATTACH,
+    )
+    registry = _Registry(existing=existing)
+
+    updated = attach_runtime(
+        registry=registry,
+        project_id='proj-1',
+        clock=lambda: '2026-04-06T00:00:00Z',
+        agent_name='agent1',
+        workspace_path='/tmp/ws',
+        backend_type='pane-backed',
+        binding_source=RuntimeBindingSource.EXTERNAL_ATTACH,
+    )
+
+    assert updated.health == 'restored'
+    assert updated.runtime_ref is None
+    assert updated.session_ref is None
+
+
+def test_provider_session_starting_attach_no_longer_uses_external_attach_preserve_shortcut() -> None:
+    existing = _runtime(
+        state=AgentState.IDLE,
+        health='healthy',
+        runtime_ref='tmux:%8',
+        session_ref='session-8',
+        binding_generation=4,
+        runtime_generation=4,
+        binding_source=RuntimeBindingSource.EXTERNAL_ATTACH,
+    )
+    registry = _Registry(existing=existing)
+
+    updated = attach_runtime(
+        registry=registry,
+        project_id='proj-1',
+        clock=lambda: '2026-04-06T00:00:00Z',
+        agent_name='agent1',
+        workspace_path='/tmp/ws',
+        backend_type='pane-backed',
+        health='starting',
+        provider='codex',
+        lifecycle_state='starting',
+        binding_source=RuntimeBindingSource.PROVIDER_SESSION,
+    )
+
+    assert updated.runtime_ref == 'tmux:%8'
+    assert updated.session_ref == 'session-8'
+    assert updated.state is AgentState.DEGRADED
+    assert updated.health == 'starting'
+    assert updated.binding_generation == 5
+    assert updated.runtime_generation == 5
+    assert updated.binding_source is RuntimeBindingSource.PROVIDER_SESSION
+
+
 def test_patch_runtime_state_updates_allowed_fields_without_touching_authority() -> None:
     existing = _runtime(binding_generation=4, runtime_generation=4, daemon_generation=3)
     registry = _Registry(existing=existing)
@@ -300,3 +359,33 @@ def test_patch_runtime_state_rejects_authority_fields() -> None:
 
     with pytest.raises(ValueError, match='invalid runtime state patch fields: runtime_generation'):
         service.patch_runtime_state(existing, runtime_generation=9)
+
+
+def test_attach_mount_attempt_authority_rejects_superseded_attempt() -> None:
+    existing = _runtime(
+        state=AgentState.IDLE,
+        health='healthy',
+        runtime_ref='tmux:%8',
+        session_ref='session-8',
+        binding_generation=4,
+        runtime_generation=4,
+        binding_source=RuntimeBindingSource.EXTERNAL_ATTACH,
+        mount_attempt_id=None,
+    )
+    registry = _Registry(existing=existing)
+    service = RuntimeService(SimpleNamespace(workspace_path=lambda agent_name: f'/tmp/{agent_name}'), registry, 'proj-1', clock=lambda: '2026-04-06T00:00:00Z')
+
+    updated, applied = service.attach_mount_attempt_authority(
+        agent_name='agent1',
+        attempt_id='mount-stale',
+        workspace_path='/tmp/ws',
+        backend_type='pane-backed',
+        runtime_ref='tmux:%9',
+        session_ref='session-9',
+        health='starting',
+        binding_source=RuntimeBindingSource.PROVIDER_SESSION,
+    )
+
+    assert applied is False
+    assert updated is existing
+    assert registry.last_upsert is None

@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 from storage.paths import PathLayout
+from storage.path_helpers import runtime_project_anchor_from_path, runtime_state_root_from_anchor_ref
 
 
 def test_path_layout_uses_project_scoped_locations(tmp_path: Path) -> None:
@@ -70,31 +71,33 @@ def test_path_layout_shortens_socket_paths_when_project_path_is_too_long(tmp_pat
 def test_path_layout_falls_back_for_wsl_mounted_drive_paths(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv('WSL_INTEROP', '1')
     monkeypatch.setenv('XDG_RUNTIME_DIR', '/mnt/e/runtime')
-    monkeypatch.setenv('XDG_STATE_HOME', str(tmp_path / 'state'))
+    monkeypatch.setenv('XDG_STATE_HOME', '/t')
 
     layout = PathLayout(Path('/mnt/c/Users/demo/repo'))
 
     assert layout.runtime_state_placement.root_kind == 'relocated'
     assert layout.runtime_state_placement.relocation_reason == 'wsl_drvfs'
-    assert layout.runtime_state_root == (tmp_path / 'state' / 'ccb' / 'projects' / layout.project_id)
+    assert layout.runtime_state_root == Path('/t/ccb/projects') / layout.project_id
     assert layout.ccbd_dir == layout.runtime_state_root / 'ccbd'
     assert layout.agents_dir == layout.runtime_state_root / 'agents'
     assert layout.config_path == Path('/mnt/c/Users/demo/repo/.ccb/ccb.config')
     assert layout.workspaces_dir == Path('/mnt/c/Users/demo/repo/.ccb/workspaces')
     assert layout.ccbd_socket_placement.root_kind == 'runtime'
-    assert layout.ccbd_socket_placement.fallback_reason == 'unsupported_filesystem'
-    assert layout.ccbd_socket_placement.filesystem_hint == 'wsl_drvfs'
-    assert str(layout.ccbd_socket_path).startswith('/tmp/ccb-runtime/')
+    assert layout.ccbd_socket_placement.fallback_reason is None
+    assert layout.ccbd_socket_placement.filesystem_hint is None
+    assert layout.ccbd_socket_placement.preferred_path == layout.runtime_state_root / 'ccbd' / 'ccbd.sock'
+    assert layout.ccbd_socket_path == layout.runtime_state_root / 'ccbd' / 'ccbd.sock'
     assert layout.ccbd_tmux_socket_placement.root_kind == 'runtime'
-    assert layout.ccbd_tmux_socket_placement.fallback_reason == 'unsupported_filesystem'
-    assert layout.ccbd_tmux_socket_placement.filesystem_hint == 'wsl_drvfs'
-    assert str(layout.ccbd_tmux_socket_path).startswith('/tmp/ccb-runtime/')
+    assert layout.ccbd_tmux_socket_placement.fallback_reason is None
+    assert layout.ccbd_tmux_socket_placement.filesystem_hint is None
+    assert layout.ccbd_tmux_socket_placement.preferred_path == layout.runtime_state_root / 'ccbd' / 'tmux.sock'
+    assert layout.ccbd_tmux_socket_path == layout.runtime_state_root / 'ccbd' / 'tmux.sock'
 
 
 def test_path_layout_uses_anchor_ref_for_relocated_runtime(tmp_path: Path) -> None:
     project_root = tmp_path / 'repo-ref'
     layout = PathLayout(project_root)
-    relocated_root = tmp_path / 'state-root'
+    relocated_root = Path('/r')
     layout.ccb_dir.mkdir(parents=True, exist_ok=True)
     layout.runtime_root_ref_path.write_text(
         '{"schema_version":1,"record_type":"ccb_runtime_root_ref","project_id":"'
@@ -112,7 +115,88 @@ def test_path_layout_uses_anchor_ref_for_relocated_runtime(tmp_path: Path) -> No
     assert relocated.runtime_state_root == relocated_root
     assert relocated.ccbd_dir == relocated_root / 'ccbd'
     assert relocated.agents_dir == relocated_root / 'agents'
+    assert relocated.ccbd_socket_path == relocated_root / 'ccbd' / 'ccbd.sock'
+    assert relocated.ccbd_tmux_socket_path == relocated_root / 'ccbd' / 'tmux.sock'
     assert relocated.runtime_marker_status == 'missing'
+
+
+def test_path_layout_relocated_runtime_root_falls_back_only_for_socket_path_length(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv('WSL_INTEROP', '1')
+    monkeypatch.setenv('XDG_RUNTIME_DIR', '/mnt/e/runtime')
+    monkeypatch.setenv('XDG_STATE_HOME', str(tmp_path / 'state'))
+
+    layout = PathLayout(Path('/mnt/c/Users/demo/repo'))
+
+    assert layout.ccbd_socket_placement.preferred_path == layout.runtime_state_root / 'ccbd' / 'ccbd.sock'
+    assert layout.ccbd_socket_placement.root_kind == 'runtime'
+    assert layout.ccbd_socket_placement.fallback_reason == 'path_too_long'
+    assert str(layout.ccbd_socket_path).startswith('/tmp/ccb-runtime/')
+    assert layout.ccbd_tmux_socket_placement.preferred_path == layout.runtime_state_root / 'ccbd' / 'tmux.sock'
+    assert layout.ccbd_tmux_socket_placement.fallback_reason == 'path_too_long'
+    assert str(layout.ccbd_tmux_socket_path).startswith('/tmp/ccb-runtime/')
+
+
+def test_path_layout_wsl_runtime_state_uses_account_home_instead_of_process_home(monkeypatch, tmp_path: Path) -> None:
+    provider_home = tmp_path / 'provider-home'
+    account_home = tmp_path / 'account-home'
+    monkeypatch.setenv('WSL_INTEROP', '1')
+    monkeypatch.setenv('HOME', str(provider_home))
+    monkeypatch.delenv('XDG_STATE_HOME', raising=False)
+    monkeypatch.setattr('storage.path_helpers._account_home_dir', lambda: account_home)
+
+    layout = PathLayout(Path('/mnt/c/Users/demo/repo'))
+
+    assert layout.runtime_state_root == account_home / '.local' / 'state' / 'ccb' / 'projects' / layout.project_id
+    assert str(layout.runtime_state_root).startswith(str(account_home))
+    assert not str(layout.runtime_state_root).startswith(str(provider_home))
+
+
+def test_runtime_state_root_from_anchor_ref_rejects_invalid_payloads(tmp_path: Path) -> None:
+    anchor = tmp_path / 'repo' / '.ccb'
+    anchor.mkdir(parents=True, exist_ok=True)
+    ref_path = anchor / 'runtime-root-ref.json'
+
+    ref_path.write_text(
+        '{"schema_version":1,"record_type":"wrong","project_id":"proj-1","runtime_state_root":"/tmp/state"}',
+        encoding='utf-8',
+    )
+    assert runtime_state_root_from_anchor_ref(anchor, project_id='proj-1') is None
+
+    ref_path.write_text(
+        '{"schema_version":1,"record_type":"ccb_runtime_root_ref","project_id":"proj-1","runtime_state_root":"relative/state"}',
+        encoding='utf-8',
+    )
+    assert runtime_state_root_from_anchor_ref(anchor, project_id='proj-1') is None
+
+
+def test_runtime_project_anchor_from_path_rejects_invalid_marker_payloads(tmp_path: Path) -> None:
+    relocated_root = tmp_path / 'state-root'
+    relocated_root.mkdir(parents=True, exist_ok=True)
+    marker_path = relocated_root / 'runtime-root.json'
+
+    marker_path.write_text(
+        '{"schema_version":1,"record_type":"wrong","project_id":"proj-1","project_root":"/tmp/repo","anchor_path":"/tmp/repo/.ccb","runtime_root_path":"'
+        + str(relocated_root)
+        + '"}',
+        encoding='utf-8',
+    )
+    assert runtime_project_anchor_from_path(relocated_root / 'agents') is None
+
+    marker_path.write_text(
+        '{"schema_version":1,"record_type":"ccb_runtime_root","project_id":"","project_root":"/tmp/repo","anchor_path":"/tmp/repo/.ccb","runtime_root_path":"'
+        + str(relocated_root)
+        + '"}',
+        encoding='utf-8',
+    )
+    assert runtime_project_anchor_from_path(relocated_root / 'agents') is None
+
+    marker_path.write_text(
+        '{"schema_version":1,"record_type":"ccb_runtime_root","project_id":"proj-1","project_root":"/tmp/repo","anchor_path":"/tmp/repo/.ccb","runtime_root_path":"'
+        + str(tmp_path / 'other-root')
+        + '"}',
+        encoding='utf-8',
+    )
+    assert runtime_project_anchor_from_path(relocated_root / 'agents') is None
 
 
 def test_storage_paths_and_project_runtime_paths_import_without_cycle() -> None:

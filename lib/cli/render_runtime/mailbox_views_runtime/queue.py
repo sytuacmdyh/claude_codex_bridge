@@ -2,10 +2,18 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
+from ..common import render_observer_notice
+
 
 def render_queue(payload: Mapping[str, object]) -> tuple[str, ...]:
+    status = 'ok'
+    if payload.get('target') != 'all':
+        agent = payload.get('agent') or {}
+        if agent.get('summary_status') != 'ok':
+            status = 'degraded'
     lines: list[str] = [
-        'queue_status: ok',
+        f'queue_status: {status}',
+        *render_observer_notice(view='queue', terminal=False),
         f'target: {payload.get("target")}',
     ]
     if payload.get('target') == 'all':
@@ -24,7 +32,8 @@ def render_queue(payload: Mapping[str, object]) -> tuple[str, ...]:
                 'queue_agent: '
                 f'name={agent["agent_name"]} runtime_state={agent.get("runtime_state")} '
                 f'runtime_health={agent.get("runtime_health")} state={agent["mailbox_state"]} '
-                f'depth={agent["queue_depth"]} pending_replies={agent["pending_reply_count"]}'
+                f'depth={agent["queue_depth"]} pending_replies={agent["pending_reply_count"]} '
+                f'summary_status={agent.get("summary_status")}'
             )
         return tuple(lines)
 
@@ -33,6 +42,7 @@ def render_queue(payload: Mapping[str, object]) -> tuple[str, ...]:
         [
             f'agent_name: {agent.get("agent_name")}',
             f'mailbox_id: {agent.get("mailbox_id")}',
+            f'summary_status: {agent.get("summary_status")}',
             f'mailbox_state: {agent.get("mailbox_state")}',
             f'runtime_state: {agent.get("runtime_state")}',
             f'runtime_health: {agent.get("runtime_health")}',
@@ -44,6 +54,16 @@ def render_queue(payload: Mapping[str, object]) -> tuple[str, ...]:
             f'last_inbound_finished_at: {agent.get("last_inbound_finished_at")}',
         ]
     )
+    if agent.get('summary_error') is not None:
+        lines.append(f'summary_error: {agent.get("summary_error")}')
+    if agent.get('summary_status') == 'missing':
+        lines.append(
+            'summary_notice: persisted mailbox summary is missing; routine observer view is degraded; use `ccb doctor` or wait for maintenance refresh'
+        )
+    elif agent.get('summary_status') == 'error':
+        lines.append(
+            'summary_notice: persisted mailbox summary is unreadable; routine observer view is degraded; use `ccb doctor` for diagnostics'
+        )
     active = agent.get('active')
     if isinstance(active, Mapping):
         lines.append(
@@ -51,7 +71,11 @@ def render_queue(payload: Mapping[str, object]) -> tuple[str, ...]:
             f'event={active.get("inbound_event_id")} type={active.get("event_type")} status={active.get("status")} '
             f'message={active.get("message_id")} attempt={active.get("attempt_id")} job={active.get("job_id")}'
         )
-    for event in agent.get('queued_events') or ():
+    queued_events = agent.get('queued_events')
+    if queued_events is None:
+        lines.append('queue_details: omitted; rerun with `ccb pend --queue --detail <agent>` or `ccb queue --detail <agent>` for queued-event detail')
+        return tuple(lines)
+    for event in queued_events or ():
         lines.append(
             'queue_event: '
             f'pos={event["position"]} event={event["inbound_event_id"]} type={event["event_type"]} '

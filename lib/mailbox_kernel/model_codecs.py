@@ -12,6 +12,12 @@ def normalize_mailbox_record(record) -> None:
         raise ValueError('mailbox_id cannot be empty')
     if not record.agent_name:
         raise ValueError('agent_name cannot be empty')
+    if record.summary_version < 0:
+        raise ValueError('summary_version cannot be negative')
+    if not str(record.summary_source or '').strip():
+        raise ValueError('summary_source cannot be empty')
+    if not str(record.summary_refreshed_at or '').strip():
+        raise ValueError('summary_refreshed_at cannot be empty')
     if record.queue_depth < 0:
         raise ValueError('queue_depth cannot be negative')
     if record.pending_reply_count < 0:
@@ -28,9 +34,18 @@ def mailbox_to_record(record) -> dict[str, Any]:
         'record_type': 'mailbox_record',
         'mailbox_id': record.mailbox_id,
         'agent_name': record.agent_name,
+        'summary_version': record.summary_version,
+        'summary_source': record.summary_source,
+        'summary_refreshed_at': record.summary_refreshed_at,
         'active_inbound_event_id': record.active_inbound_event_id,
         'queue_depth': record.queue_depth,
         'pending_reply_count': record.pending_reply_count,
+        'head_inbound_event_id': record.head_inbound_event_id,
+        'head_event_type': record.head_event_type,
+        'head_status': record.head_status,
+        'head_message_id': record.head_message_id,
+        'head_attempt_id': record.head_attempt_id,
+        'head_payload_ref': record.head_payload_ref,
         'last_inbound_started_at': record.last_inbound_started_at,
         'last_inbound_finished_at': record.last_inbound_finished_at,
         'mailbox_state': record.mailbox_state.value,
@@ -44,9 +59,18 @@ def mailbox_from_record(record: dict[str, Any]) -> dict[str, Any]:
     return {
         'mailbox_id': str(record['mailbox_id']),
         'agent_name': str(record['agent_name']),
+        'summary_version': int(record.get('summary_version', 0)),
+        'summary_source': str(record.get('summary_source') or 'legacy-load'),
+        'summary_refreshed_at': str(record.get('summary_refreshed_at') or record.get('updated_at') or ''),
         'active_inbound_event_id': record.get('active_inbound_event_id'),
         'queue_depth': int(record.get('queue_depth', 0)),
         'pending_reply_count': int(record.get('pending_reply_count', 0)),
+        'head_inbound_event_id': record.get('head_inbound_event_id'),
+        'head_event_type': record.get('head_event_type'),
+        'head_status': record.get('head_status'),
+        'head_message_id': record.get('head_message_id'),
+        'head_attempt_id': record.get('head_attempt_id'),
+        'head_payload_ref': record.get('head_payload_ref'),
         'last_inbound_started_at': record.get('last_inbound_started_at'),
         'last_inbound_finished_at': record.get('last_inbound_finished_at'),
         'mailbox_state': MailboxState(str(record.get('mailbox_state', MailboxState.IDLE.value))),

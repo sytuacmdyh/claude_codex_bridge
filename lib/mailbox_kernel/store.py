@@ -25,6 +25,14 @@ class MailboxStore:
             serializer=lambda value: value.to_record(),
         )
 
+    def compare_and_save(self, record: MailboxRecord, *, expected_summary_version: int | None) -> bool:
+        current = self.load(record.agent_name)
+        current_version = None if current is None else int(current.summary_version)
+        if current_version != expected_summary_version:
+            return False
+        self.save(record)
+        return True
+
     def list_all(self) -> list[MailboxRecord]:
         directory = self._layout.ccbd_mailboxes_dir
         if not directory.exists():
@@ -65,16 +73,18 @@ class InboundEventStore:
         return line_no, list(rows)
 
     def get_latest(self, agent_name: str, inbound_event_id: str) -> InboundEventRecord | None:
-        for record in reversed(self.list_agent(agent_name)):
-            if record.inbound_event_id == inbound_event_id:
-                return record
-        return None
+        return self._store.find_last(
+            self._layout.agent_inbox_path(agent_name),
+            predicate=lambda payload: str(payload.get('inbound_event_id') or '') == inbound_event_id,
+            loader=InboundEventRecord.from_record,
+        )
 
     def get_latest_for_attempt(self, agent_name: str, attempt_id: str) -> InboundEventRecord | None:
-        for record in reversed(self.list_agent(agent_name)):
-            if record.attempt_id == attempt_id:
-                return record
-        return None
+        return self._store.find_last(
+            self._layout.agent_inbox_path(agent_name),
+            predicate=lambda payload: str(payload.get('attempt_id') or '') == attempt_id,
+            loader=InboundEventRecord.from_record,
+        )
 
 
 class DeliveryLeaseStore:

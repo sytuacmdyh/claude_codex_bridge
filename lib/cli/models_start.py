@@ -21,6 +21,12 @@ class ParsedKillCommand:
 
 
 @dataclass(frozen=True)
+class ParsedCleanupCommand:
+    project: str | None
+    kind: str = 'cleanup'
+
+
+@dataclass(frozen=True)
 class ParsedPsCommand:
     project: str | None
     alive_only: bool = False
@@ -38,6 +44,8 @@ class ParsedDoctorCommand:
     project: str | None
     bundle: bool = False
     output_path: str | None = None
+    storage: bool = False
+    json_output: bool = False
     kind: str = 'doctor'
 
 
@@ -56,6 +64,7 @@ class ParsedPingCommand:
 
 
 __all__ = [
+    'ParsedCleanupCommand',
     'ParsedConfigValidateCommand',
     'ParsedDoctorCommand',
     'ParsedKillCommand',

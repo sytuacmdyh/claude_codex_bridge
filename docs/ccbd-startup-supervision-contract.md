@@ -202,8 +202,50 @@ Managed Claude session authority rules:
 Managed provider startup mutation rules:
 
 - startup preparation must not create, delete, or rewrite project-level provider dotfiles such as `.claude/settings.json`, `.claude/settings.local.json`, `.gemini/settings.json`, `.codex/*`, or equivalent provider-owned workspace config
+- startup may create `.ccb/ccb_memory.md` under the project anchor when it is missing, but must
+  treat it as user-editable project memory after creation
+- startup must not create, import, or otherwise rely on project-root `CCB.md`
+- startup must materialize project memory as an idempotent preparation step
+  before launching a managed provider process:
+  - source files are `.ccb/ccb_memory.md`, provider-native project memory such as
+    `CLAUDE.md` / `AGENTS.md` / `GEMINI.md`, and optional
+    `.ccb/agents/<agent>/memory.md`
+  - generated seed metadata belongs under
+    `<runtime_state_root>/state/memory.seed.json`
+  - generated runtime bundles belong under
+    `<runtime_state_root>/runtime/memory/<agent>.md`
+  - providers that require project-relative memory paths may create generated
+    bridge files under `project_root/.ccb/runtime/memory/<agent>.md`
+  - unchanged generated content should not be rewritten only to refresh mtime
+  - failures to create or refresh project-memory files should degrade with a
+    warning unless a provider requires that generated file to start correctly
+- `prepare_provider_workspace` is the single writer for generated provider
+  memory/config projections during normal pane startup; provider command
+  builders should only read the already prepared paths/env and must not refresh
+  auth/config/session material as a side effect
+- managed provider home projection must receive project root, agent name, and
+  workspace path explicitly from the startup context; it must not recover
+  project identity by walking up from relocated runtime-state paths
+- when `prepare_provider_workspace` asks a launcher to resolve the provider run
+  cwd before a pane launch session exists, it must call `resolve_run_cwd` with
+  `launch_session_id = None`; providers must not treat that prepare-phase value
+  as persisted session authority
+- pane-backed provider launchers may declare a `prepare_launch_context` hook
+  when command assembly needs project-scoped context:
+  - the runtime launcher must call `prepare_runtime`, then
+    `prepare_launch_context`, then pass the final `prepared_state` into
+    `build_start_cmd`
+  - `prepare_launch_context` may add fields such as `project_root`,
+    `workspace_path`, and `agent_events_path`; those fields are
+    launch-preparation state, not persisted provider session authority
+  - providers that require these fields must fail fast when they are absent
+    instead of silently inferring project identity from runtime paths
+  - `build_session_payload` receives the same final `prepared_state` used by
+    command assembly
 - provider bootstrap config needed for managed launches must live under `.ccb/agents/<agent>/provider-state/<provider>/` or an explicit validated provider-profile runtime home
+- managed OpenCode startup writes `.ccb/agents/<agent>/provider-state/opencode/opencode.json` as a generated `OPENCODE_CONFIG` file; it reads and merges project `opencode.json` without modifying that project file, and it uses project-relative memory instructions through `.ccb/runtime/memory/<agent>.md`
 - agent workspaces may still be created or reconciled as workspace mounts, but provider configuration/trust state must remain inside the managed provider boundary rather than the project worktree
+- a configured `git-worktree` workspace requires the project root to be a git repository; startup must fail rather than silently copying a non-git project tree
 - the project control plane (`ccb`, keeper, `ccbd`) must not inherit provider-runtime session identity or managed-home variables from the caller shell:
   - examples include `CCB_SESSION_ID`, `CCB_SESSION_FILE`, `CCB_CALLER_*`, `CODEX_*`, `CLAUDE_*`, `GEMINI_*`, `OPENCODE_*`, and equivalent provider runtime markers
   - those variables are runtime-local evidence for the currently running managed agent process, not startup authority for a new or existing project backend
@@ -244,6 +286,9 @@ Runtime start policy rules:
   - daemon-owned recovery mount, pane recovery, namespace reflow, and post-crash remount must always use `restore=true`
   - those same daemon-owned recovery paths must reuse the persisted `auto_permission` policy from `.ccb/ccbd/start-policy.json`
 - `ccb kill` / project stop-all must clear `.ccb/ccbd/start-policy.json`
+- daemon-owned background maintenance must not proactively create a missing
+  runtime from scratch unless persisted `.ccb/ccbd/start-policy.json`
+  authority exists for the current project run
 
 ### 5.5 Startup Transaction
 
@@ -343,6 +388,8 @@ Foreground command split:
   - stop waiting at control-plane readiness
   - must not enter namespace attach waits
   - must not reinterpret a namespace/UI delay as backend startup failure
+  - may rely on externally attached actionable runtime authority without first
+    forcing daemon-owned provider-session mount authority
 - `ccb -n`
   - is an explicit destructive project reset before start
   - must require interactive confirmation
@@ -407,6 +454,16 @@ This responsibility belongs to a daemon-owned supervision loop, not to:
 - health inspection paths such as `HealthMonitor.check_all()`
 
 The supervision loop must run on backend heartbeat/tick and reconcile every desired agent, regardless of whether there is queued work.
+
+That daemon-owned responsibility is still bounded by runtime authority rules:
+
+- externally attached actionable runtimes are current runtime authority, not an
+  implicit request to start a daemon-owned provider-session mount
+- daemon authority adoption must not rewrite an `external-attach` runtime into
+  `provider-session` only to stamp current daemon generation
+- background maintenance may recover or observe an externally attached runtime,
+  but missing-runtime proactive mount remains gated by persisted start-policy
+  authority
 
 For `cmd`-enabled projects:
 
@@ -520,6 +577,7 @@ That means:
 - explicit `ccb kill` is a strong management action and must not be blocked merely because the current backend is `DEGRADED` with fresh heartbeat but an unreachable socket
 - configured-agent authority must end in a clean stopped/unmounted state
 - non-terminal jobs must not survive explicit project stop as active restore or automatic retry authority
+- shutdown terminalization must not create fresh provider work while draining existing work; in particular, after-complete hooks such as automatic reply delivery must be suspended once project stop is requested
 - once shutdown intent is acquired, the backend must not run any further reconcile/heartbeat tick that could remount desired agents during the same shutdown transaction
 - once shutdown intent is acquired, new mutating RPC requests such as `submit`, `start`, `restore`, `retry`, or `attach` must be rejected with a stable lifecycle-level stopping error; clients must not surface raw socket reset errors as the user-visible contract
 - local daemon shutdown helpers must not stop at `mark_unmounted()` plus socket close; they must run the same stop-all cleanup transaction first so provider-runtime pid files, namespace state, and configured-agent authority do not survive a backend-local shutdown
@@ -597,7 +655,7 @@ Required fields for backend liveness:
 
 Write rule:
 
-- `lease.json.socket_path` and lifecycle authority `socket_path` must always record the effective active socket path for the current generation; preferred project-local socket paths are diagnostics only and belong in startup/ping/doctor payloads, not authority.
+- `lease.json.socket_path` and lifecycle authority `socket_path` must always record the effective active socket path for the current generation; preferred socket paths are diagnostics only and may live under the project anchor or a relocated runtime root, but they do not redefine authority.
 
 ### 7.2 Startup Report
 
@@ -655,6 +713,12 @@ Required write semantics:
 - `started_at`, `binding_generation`, `runtime_generation`, and `daemon_generation` must advance only when a new runtime authority epoch is created
 - a no-op reattach or repeated observation of the same binding within the same daemon generation must not silently bump `binding_generation`
 - when daemon generation changes, the resulting runtime authority must remain self-consistent even if the binding facts are otherwise reused
+- a supervision mount/recovery attempt must not overwrite a newer runtime authority epoch that was attached or adopted concurrently; once superseded, the older attempt may emit evidence but must not write failed or stale runtime authority back into `runtime.json`
+- mount-attempt ownership is represented by `mount_attempt_id` on
+  `runtime.json`; daemon-owned mount start, attach, success finalize, and
+  failure finalize must all compare against that token before writing authority
+- if an external attach supersedes a daemon-owned mount attempt, older attach or
+  finalize paths may emit diagnostics evidence but must not retake authority
 - runtime authority writes must go through the explicit agent-authority path (`attach` / authority-adopt / authority-mutate equivalents), not through generic outer-layer state patching
 - generic runtime state patching may update operational fields such as `state`, `health`, queue/reconcile markers, and last-seen timestamps, but must not mutate epoch/binding ownership fields
 - registry persistence must reject non-authority writes that attempt to change authority-owned fields for an existing runtime record

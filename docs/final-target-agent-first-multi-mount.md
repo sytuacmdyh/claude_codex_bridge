@@ -110,9 +110,9 @@ ccb ask agent1 from agent2 "请继续实现剩余部分"
 ccb ask all from user "准备进入统一测试"
 ccb ping agent1
 ccb pend agent1
-ccb watch agent1
-ccb logs agent1
-ccb ps
+ccb pend --watch agent1
+ccb doctor logs agent1
+ccb doctor ps
 ccb doctor
 ccb kill
 ```

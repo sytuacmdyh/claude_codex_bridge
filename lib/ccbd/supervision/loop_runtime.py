@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from agents.models import AgentState, RuntimeMode
+from agents.models import AgentState, RuntimeBindingSource, RuntimeMode, normalize_runtime_binding_source
 from ccbd.services.runtime_recovery_policy import normalized_runtime_health, should_attempt_background_recovery
 from ccbd.system import parse_utc_timestamp
 from ccbd.supervision.backoff import backoff_delay_seconds as backoff_delay_seconds_impl
@@ -43,6 +43,10 @@ def align_runtime_authority(ctx: RuntimeSupervisionContext, runtime):
 def authority_adopt_required(runtime, *, next_generation: int | None) -> bool:
     if next_generation is None:
         return False
+    if normalize_runtime_binding_source(
+        getattr(runtime, 'binding_source', RuntimeBindingSource.PROVIDER_SESSION)
+    ) is RuntimeBindingSource.EXTERNAL_ATTACH:
+        return False
     if runtime.state not in {AgentState.IDLE, AgentState.BUSY, AgentState.DEGRADED}:
         return False
     current_generation = getattr(runtime, 'daemon_generation', None)
@@ -54,9 +58,10 @@ def authority_adopt_required(runtime, *, next_generation: int | None) -> bool:
 
 
 def upsert_if_changed(ctx: RuntimeSupervisionContext, runtime, **updates):
-    candidate = replace(runtime, **updates)
-    if candidate == runtime:
-        return runtime
+    current = ctx.registry.get(runtime.agent_name) or runtime
+    candidate = replace(current, **updates)
+    if candidate == current:
+        return current
     return ctx.registry.upsert_authority(candidate)
 
 
@@ -93,6 +98,14 @@ def is_in_backoff_window(
 
 
 def runtime_requires_mount(runtime) -> bool:
+    if (
+        runtime.state is AgentState.STOPPED
+        and str(getattr(runtime, 'desired_state', '') or '').strip() == 'stopped'
+        and str(getattr(runtime, 'reconcile_state', '') or '').strip() == 'stopped'
+    ):
+        return False
+    if str(getattr(runtime, 'desired_state', '') or '').strip() != 'mounted':
+        return False
     return runtime.state in {AgentState.STOPPED, AgentState.FAILED}
 
 

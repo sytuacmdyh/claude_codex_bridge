@@ -28,7 +28,7 @@ def ask_async(comm, question: str) -> bool:
         marker, state = comm._send_message(question)
         remember_log_hint(comm, state)
         print(f"✅ Sent to Codex (marker: {marker[:12]}...)")
-        print("Tip: use `ccb pend <agent|job_id>` for control-plane reply inspection")
+        print("Hint: `ccb pend <agent|job_id>` is only a supplementary observer view, not an authoritative completion path")
         return True
     except Exception as exc:
         print(f"❌ Send failed: {exc}")

@@ -4,7 +4,9 @@ from .bootstrap import initialize_app
 from .handlers import register_handlers
 from .lifecycle import (
     execute_project_stop,
+    finalize_project_stop,
     heartbeat,
+    prepare_project_stop,
     record_shutdown_report,
     record_startup_report,
     release_backend_ownership,
@@ -17,10 +19,12 @@ from .policy import mount_agent_from_policy, persist_start_policy, recovery_star
 
 __all__ = [
     'execute_project_stop',
+    'finalize_project_stop',
     'heartbeat',
     'initialize_app',
     'mount_agent_from_policy',
     'persist_start_policy',
+    'prepare_project_stop',
     'record_shutdown_report',
     'record_startup_report',
     'recovery_start_options',

@@ -10,6 +10,7 @@ _MAX_REQUEST_BYTES = 1024 * 1024
 
 def handle_connection(server, conn) -> str | None:
     request = None
+    after_response_action = None
     try:
         conn.settimeout(_REQUEST_READ_TIMEOUT_S)
         raw = _recv_request_line(conn)
@@ -26,13 +27,21 @@ def handle_connection(server, conn) -> str | None:
             if rejection:
                 response = RpcResponse.failure(rejection)
             else:
-                response = RpcResponse.success(handler(request.request))
+                payload = handler(request.request)
+                if isinstance(payload, tuple) and len(payload) == 2:
+                    payload, after_response_action = payload
+                response = RpcResponse.success(payload)
     except Exception as exc:
         response = RpcResponse.failure(str(exc))
     try:
         conn.sendall((json.dumps(response.to_record(), ensure_ascii=False) + '\n').encode('utf-8'))
     except OSError:
         return getattr(request, 'op', None)
+    if after_response_action is not None:
+        try:
+            server.queue_after_response_action(after_response_action)
+        except Exception:
+            pass
     return getattr(request, 'op', None)
 
 

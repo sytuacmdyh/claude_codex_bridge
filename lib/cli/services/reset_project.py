@@ -43,7 +43,13 @@ def reset_project_state(project_root: Path, *, context: CliContext | None = None
         _unregister_project_worktrees(root, layout)
         layout.ensure_runtime_state_root()
         _clear_runtime_state(layout)
-        _clear_anchor_contents(layout.ccb_dir)
+        _clear_anchor_contents(
+            layout.ccb_dir,
+            preserve_runtime_root_ref=(
+                layout.runtime_state_placement.root_kind == 'relocated'
+                and layout.runtime_marker_status == 'ok'
+            ),
+        )
         if preserved_config_text is not None:
             layout.ccb_dir.mkdir(parents=True, exist_ok=True)
             layout.config_path.write_text(preserved_config_text, encoding='utf-8')
@@ -128,7 +134,7 @@ def _clear_runtime_state(layout: PathLayout) -> None:
         _remove_path(path)
 
 
-def _clear_anchor_contents(ccb_dir: Path) -> None:
+def _clear_anchor_contents(ccb_dir: Path, *, preserve_runtime_root_ref: bool) -> None:
     if ccb_dir.is_symlink() or ccb_dir.is_file():
         ccb_dir.unlink()
         ccb_dir.mkdir(parents=True, exist_ok=True)
@@ -136,7 +142,9 @@ def _clear_anchor_contents(ccb_dir: Path) -> None:
     if not ccb_dir.is_dir():
         return
     for child in tuple(ccb_dir.iterdir()):
-        if child.name in {'ccb.config', RUNTIME_ROOT_REF_FILENAME}:
+        if child.name == 'ccb.config':
+            continue
+        if preserve_runtime_root_ref and child.name == RUNTIME_ROOT_REF_FILENAME:
             continue
         _remove_path(child)
 

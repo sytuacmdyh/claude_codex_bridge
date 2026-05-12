@@ -124,7 +124,7 @@ def ask_async(comm, question: str) -> bool:
         _ensure_session_health(comm, probe_terminal=False)
         comm._send_via_terminal(question)
         print("✅ Sent to OpenCode")
-        print("Hint: use `ccb pend <agent|job_id>` for control-plane reply inspection")
+        print("Hint: `ccb pend <agent|job_id>` is only a supplementary observer view, not an authoritative completion path")
         return True
     except Exception as exc:
         print(f"❌ Send failed: {exc}")

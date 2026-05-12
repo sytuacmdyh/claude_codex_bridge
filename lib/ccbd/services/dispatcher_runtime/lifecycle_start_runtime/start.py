@@ -42,6 +42,8 @@ def start_running_job(
 ) -> JobRecord:
     started_at = started_at or dispatcher._clock()
     running = replace(current, status=JobStatus.RUNNING, updated_at=started_at)
+    if dispatcher._message_bureau is not None:
+        dispatcher._message_bureau.mark_attempt_started(running, started_at=started_at)
     append_job(dispatcher, running)
     append_event(dispatcher, running, 'job_started', {'status': JobStatus.RUNNING.value}, timestamp=started_at)
     write_running_snapshot(dispatcher, running, started_at=started_at)
@@ -49,8 +51,6 @@ def start_running_job(
     dispatcher._state.mark_active_for(running.target_kind, running.target_name, running.job_id)
     if slot.requires_runtime_sync:
         sync_runtime(dispatcher, running.agent_name, state=AgentState.BUSY)
-    if dispatcher._message_bureau is not None:
-        dispatcher._message_bureau.mark_attempt_started(running, started_at=started_at)
     submission = None
     if dispatcher._execution_service is not None and should_start_execution(dispatcher, running, runtime_context):
         submission = dispatcher._execution_service.start(running, runtime_context=runtime_context)

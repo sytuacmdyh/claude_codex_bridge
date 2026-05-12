@@ -160,8 +160,8 @@ def _prompt_delivery_due(
         return True
     if looks_ready(text):
         return True
-    if bool(submission.runtime_state.get("reply_delivery_require_ready", False)):
-        return False
+    # Reply delivery prefers an observed ready prompt, but it must not deadlock
+    # a serial mailbox queue forever when the prompt detector never converges.
     return _ready_wait_timed_out(submission, now=now)
 
 

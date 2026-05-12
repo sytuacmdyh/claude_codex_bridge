@@ -9,7 +9,14 @@ from .env import (
 )
 from .home import materialize_claude_home_config, prepare_claude_home_overrides, resolve_claude_home_layout
 from .restore import claude_history_state, project_session_restore_target, resolve_claude_restore_target
-from .service import build_runtime_launcher, build_session_payload, build_start_cmd, prepare_runtime, resolve_run_cwd
+from .service import (
+    build_runtime_launcher,
+    build_session_payload,
+    build_start_cmd,
+    prepare_launch_context,
+    prepare_runtime,
+    resolve_run_cwd,
+)
 
 __all__ = [
     'build_claude_env_prefix',
@@ -22,6 +29,7 @@ __all__ = [
     'materialize_claude_home_config',
     'prepare_claude_home_overrides',
     'prepare_runtime',
+    'prepare_launch_context',
     'project_session_restore_target',
     'resolve_claude_restore_target',
     'resolve_claude_home_layout',

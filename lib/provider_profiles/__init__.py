@@ -25,6 +25,12 @@ def provider_api_env_keys(provider: str) -> set[str]:
     return _impl(provider)
 
 
+def validate_provider_runtime_home_uniqueness(*, layout: Any, specs: Any) -> None:
+    from .materializer import validate_provider_runtime_home_uniqueness as _impl
+
+    _impl(layout=layout, specs=specs)
+
+
 __all__ = [
     'ProviderProfileSpec',
     'ResolvedProviderProfile',
@@ -33,4 +39,5 @@ __all__ = [
     'provider_api_env_keys',
     'provider_api_shortcut_env',
     'supported_provider_api_shortcuts',
+    'validate_provider_runtime_home_uniqueness',
 ]

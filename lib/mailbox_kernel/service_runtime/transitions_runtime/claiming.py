@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from ..mailbox import refresh_mailbox
+from ..mailbox import rebuild_mailbox_summary
 from ..queries import head_pending_event, peek_next
+from ..summary import apply_transition_summary_update, summary_head_from_event
 from .leasing import next_lease_version
 
 
@@ -50,7 +51,22 @@ def _claim_current(service, agent_name: str, current, timestamp: str):
     updated = _delivery_record(service, current, timestamp)
     service._inbound_store.append(updated)
     service._lease_store.save(_delivery_lease(service, agent_name, current.inbound_event_id, timestamp))
-    refresh_mailbox(service, agent_name, updated_at=timestamp)
+    prior = service._mailbox_store.load(agent_name)
+    if prior is None or prior.queue_depth <= 0 or prior.head_inbound_event_id != current.inbound_event_id:
+        rebuild_mailbox_summary(service, agent_name, updated_at=timestamp)
+        return updated
+    apply_transition_summary_update(
+        service,
+        agent_name,
+        queue_depth=prior.queue_depth,
+        pending_reply_count=prior.pending_reply_count,
+        active_inbound_event_id=current.inbound_event_id,
+        last_started_at=_latest_timestamp(prior.last_inbound_started_at, updated.started_at),
+        last_finished_at=prior.last_inbound_finished_at,
+        updated_at=timestamp,
+        summary_source='transition-claim',
+        summary_head=summary_head_from_event(updated),
+    )
     return updated
 
 
@@ -76,21 +92,27 @@ def _delivery_lease(service, agent_name: str, inbound_event_id: str, timestamp: 
 
 
 def _refresh_current(service, agent_name: str, current, timestamp: str):
-    refresh_mailbox(service, agent_name, updated_at=timestamp)
+    rebuild_mailbox_summary(service, agent_name, updated_at=timestamp)
     return current
 
 
 def claim_next(service, agent_name: str, *, event_type=None, started_at: str | None = None):
     next_event = peek_next(service, agent_name, event_type=event_type)
     if next_event is None:
-        refresh_mailbox(service, agent_name, updated_at=started_at or service._clock())
+        rebuild_mailbox_summary(service, agent_name, updated_at=started_at or service._clock())
         return None
     return claim(service, agent_name, next_event.inbound_event_id, started_at=started_at)
 
 
 def _refresh_none(service, agent_name: str, timestamp: str):
-    refresh_mailbox(service, agent_name, updated_at=timestamp)
+    rebuild_mailbox_summary(service, agent_name, updated_at=timestamp)
     return None
+
+
+def _latest_timestamp(current: str | None, candidate: str | None) -> str | None:
+    if candidate and (current is None or candidate > current):
+        return candidate
+    return current
 
 
 __all__ = ['claim', 'claim_next']

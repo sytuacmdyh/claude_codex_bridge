@@ -22,6 +22,7 @@ from .env import build_gemini_env_prefix
 
 def build_runtime_launcher(
     *,
+    prepare_launch_context_fn,
     build_start_cmd_fn,
     build_session_payload_fn,
     resolve_run_cwd_fn,
@@ -29,6 +30,7 @@ def build_runtime_launcher(
     return ProviderRuntimeLauncher(
         provider="gemini",
         launch_mode="simple_tmux",
+        prepare_launch_context=prepare_launch_context_fn,
         build_start_cmd=build_start_cmd_fn,
         build_session_payload=build_session_payload_fn,
         resolve_run_cwd=resolve_run_cwd_fn,
@@ -41,12 +43,24 @@ def build_start_cmd(
     runtime_dir,
     launch_session_id: str,
     *,
+    prepared_state: dict[str, object] | None = None,
     resolve_restore_target_fn,
     prepare_home_overrides_fn,
 ) -> str:
     runtime_dir = Path(runtime_dir)
     profile = load_resolved_provider_profile(runtime_dir)
-    home_overrides = prepare_home_overrides_fn(runtime_dir, profile)
+    launch_context = prepared_state or {}
+    project_root = _path_or_none(launch_context.get('project_root'))
+    if project_root is None:
+        raise RuntimeError('Gemini launch requires prepare_launch_context before build_start_cmd')
+    home_overrides = prepare_home_overrides_fn(
+        runtime_dir,
+        profile,
+        refresh_home=False,
+        project_root=project_root,
+        agent_name=spec.name,
+        workspace_path=_path_or_none(launch_context.get('workspace_path')),
+    )
     restore_target = resolve_restore_target_fn(
         spec=spec,
         runtime_dir=runtime_dir,
@@ -72,12 +86,22 @@ def build_start_cmd(
     return cmd
 
 
+def _path_or_none(value: object) -> Path | None:
+    raw = str(value or '').strip()
+    if not raw:
+        return None
+    try:
+        return Path(raw).expanduser()
+    except Exception:
+        return None
+
+
 def resolve_run_cwd(
     command: ParsedStartCommand,
     spec: AgentSpec,
     plan: WorkspacePlan,
     runtime_dir: Path,
-    launch_session_id: str,
+    launch_session_id: str | None,
     *,
     resolve_restore_target_fn,
 ) -> Path | str | None:

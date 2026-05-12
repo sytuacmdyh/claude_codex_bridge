@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from agents.config_loader import load_project_config
+from agents.config_loader import ConfigValidationError, load_project_config
 from cli.context import CliContext
+from provider_profiles import validate_provider_runtime_home_uniqueness
 
 
 @dataclass(frozen=True)
@@ -20,6 +21,10 @@ class ConfigValidationSummary:
 
 def validate_config_context(context: CliContext) -> ConfigValidationSummary:
     result = load_project_config(context.project.project_root)
+    try:
+        validate_provider_runtime_home_uniqueness(layout=context.paths, specs=result.config.agents.values())
+    except ValueError as exc:
+        raise ConfigValidationError(str(exc)) from exc
     return ConfigValidationSummary(
         project_root=str(context.project.project_root),
         project_id=context.project.project_id,

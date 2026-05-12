@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from ccbd.api_models import DeliveryScope, JobEvent, JobRecord, JobStatus, MessageEnvelope, SubmissionRecord, TargetKind
@@ -93,26 +94,69 @@ def test_event_and_submission_stores_roundtrip(tmp_path: Path) -> None:
     assert latest.job_ids == ['job-1', 'job-2']
 
 
-def test_submission_store_preserves_cmd_sender(tmp_path: Path) -> None:
+def test_event_store_skips_provider_diagnostics_in_event_log(tmp_path: Path) -> None:
+    layout = PathLayout(tmp_path / 'repo')
+    event_store = JobEventStore(layout)
+    event_store.append(
+        JobEvent(
+            event_id='evt-1',
+            job_id='job-1',
+            agent_name='agent1',
+            type='job_started',
+            payload={'status': 'running'},
+            timestamp='2026-03-18T00:00:00Z',
+        )
+    )
+    events_path = layout.agent_events_path('agent1')
+    with events_path.open('a', encoding='utf-8') as handle:
+        handle.write(
+            json.dumps(
+                {
+                    'record_type': 'agent_event',
+                    'event_type': 'codex_memory_projection_ok',
+                    'provider': 'codex',
+                    'agent_name': 'agent1',
+                },
+                ensure_ascii=False,
+            )
+            + '\n'
+        )
+    event_store.append(
+        JobEvent(
+            event_id='evt-2',
+            job_id='job-1',
+            agent_name='agent1',
+            type='job_completed',
+            payload={'status': 'completed'},
+            timestamp='2026-03-18T00:00:01Z',
+        )
+    )
+
+    line_no, events = event_store.read_since('agent1', 0)
+    assert line_no == 3
+    assert [event.event_id for event in events] == ['evt-1', 'evt-2']
+
+
+def test_submission_store_preserves_user_sender(tmp_path: Path) -> None:
     layout = PathLayout(tmp_path / 'repo')
     submission_store = SubmissionStore(layout)
 
     submission_store.append(
         SubmissionRecord(
-            submission_id='sub-cmd',
+            submission_id='sub-user',
             project_id='proj-1',
-            from_actor='CMD',
+            from_actor='USER',
             target_scope='single',
-            task_id='task-cmd',
+            task_id='task-user',
             job_ids=['job-9'],
             created_at='2026-03-18T00:00:00Z',
             updated_at='2026-03-18T00:00:01Z',
         )
     )
 
-    latest = submission_store.get_latest('sub-cmd')
+    latest = submission_store.get_latest('sub-user')
     assert latest is not None
-    assert latest.from_actor == 'cmd'
+    assert latest.from_actor == 'user'
 
 
 def test_job_store_supports_explicit_target_lookup(tmp_path: Path) -> None:

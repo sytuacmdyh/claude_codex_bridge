@@ -93,7 +93,7 @@ def refresh_session_liveness(
     del controller
     if context.current is None:
         return context.with_updates(session_is_alive=False)
-    prepare_server(context.backend)
+    prepare_server(context.backend, timeout_s=timeout_s)
     return context.with_updates(
         session_is_alive=session_alive(
             context.backend,

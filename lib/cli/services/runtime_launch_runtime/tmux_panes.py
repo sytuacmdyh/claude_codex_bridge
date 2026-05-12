@@ -4,6 +4,8 @@ import os
 import time
 from pathlib import Path
 
+from terminal_runtime.placeholders import pane_placeholder_argv
+
 
 def launch_pane(
     backend,
@@ -113,7 +115,7 @@ def create_detached_tmux_pane(backend, *, cmd: str, cwd: Path, session_name: str
     target_session = f'{session_name}-{int(time.time() * 1000)}-{os.getpid()}'
     prepare_detached_tmux_server(backend)
     backend._tmux_run(  # type: ignore[attr-defined]
-        ['new-session', '-d', '-x', '160', '-y', '48', '-s', target_session, '-c', str(cwd)],
+        ['new-session', '-d', '-x', '160', '-y', '48', '-s', target_session, '-c', str(cwd), *pane_placeholder_argv()],
         check=True,
     )
     result = backend._tmux_run(  # type: ignore[attr-defined]

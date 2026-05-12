@@ -6,7 +6,7 @@ import shlex
 from .stores import report_summary_fields, safe_report_load
 
 
-def ccbd_summary(*, local, stores: dict[str, object], errors: list[str]) -> dict:
+def ccbd_summary(*, local, stores: dict[str, object], errors: list[str], remote: dict | None = None) -> dict:
     return {
         'state': local.mount_state,
         'pid': None,
@@ -41,6 +41,11 @@ def ccbd_summary(*, local, stores: dict[str, object], errors: list[str]) -> dict
         'heartbeat_fresh': local.heartbeat_fresh,
         'takeover_allowed': local.takeover_allowed,
         'reason': local.reason,
+        'last_request_queue_wait_s': _remote_metric(remote, 'last_request_queue_wait_s'),
+        'last_submit_duration_s': _remote_metric(remote, 'last_submit_duration_s'),
+        'last_ping_duration_s': _remote_metric(remote, 'last_ping_duration_s'),
+        'last_maintenance_duration_s': _remote_metric(remote, 'last_maintenance_duration_s'),
+        'pending_maintenance_ticks': _remote_metric(remote, 'pending_maintenance_ticks'),
         'startup_id': local.startup_id,
         'startup_stage': local.startup_stage,
         'last_progress_at': local.last_progress_at,
@@ -69,6 +74,21 @@ def _tmux_start_server_command(socket_path: object) -> str | None:
     if not text:
         return None
     return shlex.join(['tmux', '-S', text, 'start-server'])
+
+
+def _remote_metric(remote: dict | None, key: str) -> float | None:
+    if not isinstance(remote, dict):
+        return None
+    diagnostics = remote.get('diagnostics')
+    if not isinstance(diagnostics, dict):
+        return None
+    value = diagnostics.get(key)
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except Exception:
+        return None
 
 
 __all__ = ['ccbd_summary']

@@ -9,6 +9,6 @@ def build_shutdown_handler(app):
             reason='shutdown',
             clear_start_policy=True,
         )
-        return summary.to_record()
+        return summary.to_record(), app.socket_server.request_shutdown
 
     return handle

@@ -4,7 +4,7 @@ from typing import Iterable
 
 from agents.models import AgentState, QueuePolicy, normalize_agent_name
 from ccbd.api_models import DeliveryScope
-from mailbox_runtime.targets import CMD_ACTOR, NON_AGENT_ACTORS
+from mailbox_runtime.targets import NON_AGENT_ACTORS
 
 from .records import get_job, latest_for_agent
 
@@ -14,7 +14,7 @@ def validate_sender(dispatcher, sender: str) -> None:
     if not normalized:
         raise dispatcher._dispatch_error('sender cannot be empty')
     if normalized in NON_AGENT_ACTORS:
-        if normalized == CMD_ACTOR and not bool(getattr(dispatcher._config, 'cmd_enabled', False)):
+        if normalized == 'cmd':
             raise dispatcher._dispatch_error(f'unknown sender agent: {normalized}')
         return
     agent_name = normalize_agent_name(normalized)
@@ -25,11 +25,6 @@ def validate_sender(dispatcher, sender: str) -> None:
 def resolve_targets(dispatcher, request) -> tuple[str, ...]:
     if request.delivery_scope is DeliveryScope.SINGLE:
         dispatcher._registry.spec_for(request.to_agent)
-        runtime = dispatcher._registry.get(request.to_agent)
-        if runtime is None or runtime.state in {AgentState.STOPPED, AgentState.FAILED}:
-            if dispatcher._runtime_service is None:
-                raise dispatcher._dispatch_error(f'agent {request.to_agent} is not running')
-            dispatcher._runtime_service.ensure_ready(request.to_agent)
         return (request.to_agent,)
 
     alive = [runtime.agent_name for runtime in dispatcher._registry.list_alive()]
@@ -73,6 +68,7 @@ def build_watch_payload(dispatcher, target: str, *, start_line: int = 0) -> dict
     cursor, events = dispatcher._event_store.read_since_target(latest.target_kind, target_name, start_line)
     filtered = [event for event in events if event.job_id == job_id]
     snapshot = dispatcher._snapshot_writer.load(job_id)
+    terminal_decision = latest.terminal_decision if isinstance(latest.terminal_decision, dict) else None
     terminal = False
     if latest.status in dispatcher._terminal_event_by_status:
         terminal = True
@@ -87,6 +83,10 @@ def build_watch_payload(dispatcher, target: str, *, start_line: int = 0) -> dict
         'cursor': cursor,
         'terminal': terminal,
         'status': latest.status.value,
-        'reply': snapshot.latest_decision.reply if snapshot is not None else '',
+        'reply': (
+            str(terminal_decision.get('reply') or '')
+            if terminal_decision is not None
+            else (snapshot.latest_decision.reply if snapshot is not None else '')
+        ),
         'events': [event.to_record() for event in filtered],
     }

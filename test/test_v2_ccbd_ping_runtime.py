@@ -17,6 +17,8 @@ from agents.models import (
 from ccbd.handlers.ping_runtime.handler import build_ping_handler
 from ccbd.handlers.ping_runtime.payloads import build_ccbd_payload
 from ccbd.models import LeaseHealth
+from cli.services.ping import ping_target
+from cli.models import ParsedPingCommand
 from storage.path_helpers import SocketPlacement
 
 
@@ -35,7 +37,12 @@ def _config() -> ProjectConfig:
     return ProjectConfig(version=2, default_agents=('demo',), agents={'demo': spec})
 
 
-def _inspection(*, phase: str, desired_state: str, socket_path: str = '/tmp/ccbd.sock'):
+def _inspection(
+    *,
+    phase: str,
+    desired_state: str,
+    socket_path: str = '/home/demo/.local/state/ccb/projects/proj-1/ccbd/ccbd.sock',
+):
     return SimpleNamespace(
         phase=phase,
         desired_state=desired_state,
@@ -64,19 +71,29 @@ def _inspection(*, phase: str, desired_state: str, socket_path: str = '/tmp/ccbd
 def _paths() -> SimpleNamespace:
     return SimpleNamespace(
         ccbd_socket_placement=SocketPlacement(
-            preferred_path=Path('/mnt/e/repo/.ccb/ccbd/ccbd.sock'),
-            effective_path=Path('/tmp/ccb-runtime/ccbd-proj.sock'),
+            preferred_path=Path('/home/demo/.local/state/ccb/projects/proj-1/ccbd/ccbd.sock'),
+            effective_path=Path('/home/demo/.local/state/ccb/projects/proj-1/ccbd/ccbd.sock'),
             root_kind='runtime',
-            fallback_reason='unsupported_filesystem',
-            filesystem_hint='wsl_drvfs',
+            fallback_reason=None,
+            filesystem_hint=None,
         ),
         ccbd_tmux_socket_placement=SocketPlacement(
-            preferred_path=Path('/mnt/e/repo/.ccb/ccbd/tmux.sock'),
-            effective_path=Path('/tmp/ccb-runtime/tmux-proj.sock'),
+            preferred_path=Path('/home/demo/.local/state/ccb/projects/proj-1/ccbd/tmux.sock'),
+            effective_path=Path('/home/demo/.local/state/ccb/projects/proj-1/ccbd/tmux.sock'),
             root_kind='runtime',
-            fallback_reason='unsupported_filesystem',
-            filesystem_hint='wsl_drvfs',
+            fallback_reason=None,
+            filesystem_hint=None,
         ),
+    )
+
+
+def _metrics() -> SimpleNamespace:
+    return SimpleNamespace(
+        last_request_queue_wait_s=0.012,
+        last_submit_duration_s=0.034,
+        last_ping_duration_s=0.056,
+        last_maintenance_duration_s=0.078,
+        pending_maintenance_ticks=2,
     )
 
 
@@ -91,17 +108,23 @@ def test_build_ccbd_payload_prefers_lifecycle_phase_over_lease_mount_state() -> 
         namespace_summary={},
         namespace_event_summary={},
         start_policy_summary={},
+        control_plane_metrics=_metrics(),
     )
 
     assert payload['mount_state'] == 'starting'
     assert payload['desired_state'] == 'running'
-    assert payload['socket_path'] == '/tmp/ccbd.sock'
-    assert payload['preferred_socket_path'] == '/mnt/e/repo/.ccb/ccbd/ccbd.sock'
-    assert payload['effective_socket_path'] == '/tmp/ccb-runtime/ccbd-proj.sock'
+    assert payload['socket_path'] == '/home/demo/.local/state/ccb/projects/proj-1/ccbd/ccbd.sock'
+    assert payload['preferred_socket_path'] == '/home/demo/.local/state/ccb/projects/proj-1/ccbd/ccbd.sock'
+    assert payload['effective_socket_path'] == '/home/demo/.local/state/ccb/projects/proj-1/ccbd/ccbd.sock'
     assert payload['socket_root_kind'] == 'runtime'
-    assert payload['socket_fallback_reason'] == 'unsupported_filesystem'
-    assert payload['socket_filesystem_hint'] == 'wsl_drvfs'
-    assert payload['tmux_socket_path'] == '/tmp/ccb-runtime/tmux-proj.sock'
+    assert payload['socket_fallback_reason'] is None
+    assert payload['socket_filesystem_hint'] is None
+    assert payload['tmux_socket_path'] == '/home/demo/.local/state/ccb/projects/proj-1/ccbd/tmux.sock'
+    assert payload['diagnostics']['last_request_queue_wait_s'] == 0.012
+    assert payload['diagnostics']['last_submit_duration_s'] == 0.034
+    assert payload['diagnostics']['last_ping_duration_s'] == 0.056
+    assert payload['diagnostics']['last_maintenance_duration_s'] == 0.078
+    assert payload['diagnostics']['pending_maintenance_ticks'] == 2
     assert payload['diagnostics']['last_failure_reason'] == 'startup_in_progress'
     assert payload['diagnostics']['startup_id'] == 'startup-123'
     assert payload['diagnostics']['startup_stage'] == 'spawn_requested'
@@ -111,6 +134,10 @@ def test_build_ccbd_payload_prefers_lifecycle_phase_over_lease_mount_state() -> 
 
 def test_ping_handler_all_uses_lifecycle_phase_for_ccbd_state() -> None:
     config = _config()
+
+    def _unexpected_summary():
+        raise AssertionError('ccbd-only summaries should not load for ping all')
+
     handler = build_ping_handler(
         project_id='proj-1',
         config=config,
@@ -125,7 +152,12 @@ def test_ping_handler_all_uses_lifecycle_phase_for_ccbd_state() -> None:
             daemon_health=lambda: _inspection(phase='starting', desired_state='running'),
         ),
         execution_registry=SimpleNamespace(get=lambda provider: None),
-        execution_state_store=SimpleNamespace(summary=lambda: {}),
+        execution_state_store=SimpleNamespace(summary=_unexpected_summary),
+        restore_report_store=SimpleNamespace(load=_unexpected_summary),
+        namespace_state_store=SimpleNamespace(load=_unexpected_summary),
+        namespace_event_store=SimpleNamespace(load_latest=_unexpected_summary),
+        start_policy_store=SimpleNamespace(load=_unexpected_summary),
+        metrics=_metrics(),
     )
 
     payload = handler({'target': 'all'})
@@ -133,6 +165,36 @@ def test_ping_handler_all_uses_lifecycle_phase_for_ccbd_state() -> None:
     assert payload['ccbd_state'] == 'starting'
     assert payload['agents'][0]['mount_state'] == 'starting'
     assert payload['agents'][0]['diagnostics']['desired_state'] == 'running'
+
+
+def test_ping_handler_ccbd_does_not_force_health_check() -> None:
+    config = _config()
+
+    def _unexpected_check_all():
+        raise AssertionError('check_all should not run for light ping')
+
+    handler = build_ping_handler(
+        project_id='proj-1',
+        config=config,
+        paths=_paths(),
+        registry=SimpleNamespace(
+            list_known_agents=lambda: ('demo',),
+            spec_for=lambda name: config.agents[name],
+            get=lambda name: None,
+        ),
+        health_monitor=SimpleNamespace(
+            check_all=_unexpected_check_all,
+            daemon_health=lambda: _inspection(phase='mounted', desired_state='running'),
+        ),
+        execution_registry=SimpleNamespace(get=lambda provider: None),
+        execution_state_store=SimpleNamespace(summary=lambda: {}),
+        metrics=_metrics(),
+    )
+
+    payload = handler({'target': 'ccbd'})
+
+    assert payload['mount_state'] == 'mounted'
+    assert payload['diagnostics']['last_ping_duration_s'] >= 0.0
 
 
 def test_build_agent_payload_prefers_runtime_mount_state_over_project_phase() -> None:
@@ -154,6 +216,9 @@ def test_build_agent_payload_prefers_runtime_mount_state_over_project_phase() ->
         provider='codex',
     )
 
+    def _unexpected_summary():
+        raise AssertionError('ccbd-only summaries should not load for ping agent')
+
     handler = build_ping_handler(
         project_id='proj-1',
         config=config,
@@ -168,7 +233,12 @@ def test_build_agent_payload_prefers_runtime_mount_state_over_project_phase() ->
             daemon_health=lambda: _inspection(phase='failed', desired_state='running'),
         ),
         execution_registry=SimpleNamespace(get=lambda provider: None),
-        execution_state_store=SimpleNamespace(summary=lambda: {}),
+        execution_state_store=SimpleNamespace(summary=_unexpected_summary),
+        restore_report_store=SimpleNamespace(load=_unexpected_summary),
+        namespace_state_store=SimpleNamespace(load=_unexpected_summary),
+        namespace_event_store=SimpleNamespace(load_latest=_unexpected_summary),
+        start_policy_store=SimpleNamespace(load=_unexpected_summary),
+        metrics=_metrics(),
     )
 
     payload = handler({'target': 'demo'})
@@ -176,3 +246,176 @@ def test_build_agent_payload_prefers_runtime_mount_state_over_project_phase() ->
     assert payload['mount_state'] == 'mounted'
     assert payload['runtime_state'] == 'busy'
     assert payload['health'] == 'healthy'
+
+
+def test_ping_target_unmounted_ccbd_includes_timing_fields(monkeypatch, tmp_path: Path) -> None:
+    context = SimpleNamespace()
+
+    monkeypatch.setattr(
+        'cli.services.ping.ping_local_state',
+        lambda _context: SimpleNamespace(
+            project_id='proj-1',
+            mount_state='unmounted',
+            health='unmounted',
+            generation=0,
+            project_anchor_path='/tmp/repo/.ccb',
+            runtime_state_root='/tmp/repo/.ccb',
+            runtime_root_kind='project',
+            runtime_relocation_reason=None,
+            runtime_filesystem_hint=None,
+            runtime_marker_status='not_required',
+            socket_path=None,
+            preferred_socket_path='/tmp/repo/.ccb/ccbd/ccbd.sock',
+            effective_socket_path='/tmp/repo/.ccb/ccbd/ccbd.sock',
+            socket_root_kind='project',
+            socket_fallback_reason=None,
+            socket_filesystem_hint=None,
+            tmux_socket_path='/tmp/repo/.ccb/ccbd/tmux.sock',
+            tmux_preferred_socket_path='/tmp/repo/.ccb/ccbd/tmux.sock',
+            tmux_effective_socket_path='/tmp/repo/.ccb/ccbd/tmux.sock',
+            tmux_socket_root_kind='project',
+            tmux_socket_fallback_reason=None,
+            tmux_socket_filesystem_hint=None,
+            last_heartbeat_at=None,
+            pid_alive=False,
+            socket_connectable=False,
+            heartbeat_fresh=False,
+            takeover_allowed=True,
+            reason='lease_unmounted',
+            startup_id=None,
+            startup_stage=None,
+            last_progress_at=None,
+            startup_deadline_at=None,
+            last_failure_reason=None,
+            shutdown_intent=None,
+        ),
+    )
+
+    payload = ping_target(context, ParsedPingCommand(project=None, target='ccbd'))
+
+    assert payload['mount_state'] == 'unmounted'
+    assert payload['last_request_queue_wait_s'] is None
+    assert payload['last_submit_duration_s'] is None
+    assert payload['last_ping_duration_s'] is None
+    assert payload['last_maintenance_duration_s'] is None
+    assert payload['pending_maintenance_ticks'] is None
+
+
+def test_ping_target_all_uses_non_mutating_probe(monkeypatch) -> None:
+    context = SimpleNamespace()
+    seen: list[bool] = []
+
+    monkeypatch.setattr(
+        'cli.services.ping.ping_local_state',
+        lambda _context: SimpleNamespace(
+            mount_state='mounted',
+            project_id='proj-1',
+            health='healthy',
+            generation=1,
+            project_anchor_path='/tmp/repo/.ccb',
+            runtime_state_root='/tmp/repo/.ccb',
+            runtime_root_kind='project',
+            runtime_relocation_reason=None,
+            runtime_filesystem_hint=None,
+            runtime_marker_status='not_required',
+            socket_path='/tmp/repo/.ccb/ccbd/ccbd.sock',
+            preferred_socket_path='/tmp/repo/.ccb/ccbd/ccbd.sock',
+            effective_socket_path='/tmp/repo/.ccb/ccbd/ccbd.sock',
+            socket_root_kind='project',
+            socket_fallback_reason=None,
+            socket_filesystem_hint=None,
+            tmux_socket_path='/tmp/repo/.ccb/ccbd/tmux.sock',
+            tmux_preferred_socket_path='/tmp/repo/.ccb/ccbd/tmux.sock',
+            tmux_effective_socket_path='/tmp/repo/.ccb/ccbd/tmux.sock',
+            tmux_socket_root_kind='project',
+            tmux_socket_fallback_reason=None,
+            tmux_socket_filesystem_hint=None,
+            last_heartbeat_at='2026-05-08T00:00:00Z',
+            pid_alive=True,
+            socket_connectable=True,
+            heartbeat_fresh=True,
+            takeover_allowed=False,
+            reason='healthy',
+            startup_id=None,
+            startup_stage=None,
+            last_progress_at=None,
+            startup_deadline_at=None,
+            last_failure_reason=None,
+            shutdown_intent=None,
+        ),
+    )
+
+    class _Client:
+        def ping(self, target: str) -> dict:
+            return {'project_id': 'proj-1', 'ccbd_state': 'mounted', 'agents': [], 'target': target}
+
+    def _connect(_context, *, allow_restart_stale):
+        seen.append(allow_restart_stale)
+        return SimpleNamespace(client=_Client())
+
+    monkeypatch.setattr('cli.services.ping.connect_mounted_daemon', _connect)
+
+    payload = ping_target(context, ParsedPingCommand(project=None, target='all'))
+
+    assert payload['target'] == 'all'
+    assert seen == [False]
+
+
+def test_ping_target_agent_uses_non_mutating_probe(monkeypatch) -> None:
+    context = SimpleNamespace()
+    seen: list[bool] = []
+
+    monkeypatch.setattr(
+        'cli.services.ping.ping_local_state',
+        lambda _context: SimpleNamespace(
+            mount_state='mounted',
+            project_id='proj-1',
+            health='healthy',
+            generation=1,
+            project_anchor_path='/tmp/repo/.ccb',
+            runtime_state_root='/tmp/repo/.ccb',
+            runtime_root_kind='project',
+            runtime_relocation_reason=None,
+            runtime_filesystem_hint=None,
+            runtime_marker_status='not_required',
+            socket_path='/tmp/repo/.ccb/ccbd/ccbd.sock',
+            preferred_socket_path='/tmp/repo/.ccb/ccbd/ccbd.sock',
+            effective_socket_path='/tmp/repo/.ccb/ccbd/ccbd.sock',
+            socket_root_kind='project',
+            socket_fallback_reason=None,
+            socket_filesystem_hint=None,
+            tmux_socket_path='/tmp/repo/.ccb/ccbd/tmux.sock',
+            tmux_preferred_socket_path='/tmp/repo/.ccb/ccbd/tmux.sock',
+            tmux_effective_socket_path='/tmp/repo/.ccb/ccbd/tmux.sock',
+            tmux_socket_root_kind='project',
+            tmux_socket_fallback_reason=None,
+            tmux_socket_filesystem_hint=None,
+            last_heartbeat_at='2026-05-08T00:00:00Z',
+            pid_alive=True,
+            socket_connectable=True,
+            heartbeat_fresh=True,
+            takeover_allowed=False,
+            reason='healthy',
+            startup_id=None,
+            startup_stage=None,
+            last_progress_at=None,
+            startup_deadline_at=None,
+            last_failure_reason=None,
+            shutdown_intent=None,
+        ),
+    )
+
+    class _Client:
+        def ping(self, target: str) -> dict:
+            return {'project_id': 'proj-1', 'agent_name': target, 'mount_state': 'mounted', 'health': 'healthy', 'diagnostics': {}}
+
+    def _connect(_context, *, allow_restart_stale):
+        seen.append(allow_restart_stale)
+        return SimpleNamespace(client=_Client())
+
+    monkeypatch.setattr('cli.services.ping.connect_mounted_daemon', _connect)
+
+    payload = ping_target(context, ParsedPingCommand(project=None, target='demo'))
+
+    assert payload['agent_name'] == 'demo'
+    assert seen == [False]

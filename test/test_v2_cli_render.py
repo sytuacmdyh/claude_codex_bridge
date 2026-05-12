@@ -244,6 +244,7 @@ def test_render_queue_includes_runtime_health_fields() -> None:
         'agent': {
             'agent_name': 'codex',
             'mailbox_id': 'mbx_codex',
+            'summary_status': 'ok',
             'mailbox_state': 'blocked',
             'runtime_state': 'degraded',
             'runtime_health': 'pane-dead',
@@ -259,9 +260,14 @@ def test_render_queue_includes_runtime_health_fields() -> None:
 
     assert render_queue(payload) == (
         'queue_status: ok',
+        'observer_view: queue',
+        'observer_authority: supplementary_snapshot',
+        'observer_terminal: false',
+        'observer_notice: weak observer surface; non-terminal state may change; prefer ccb ask --wait / ccb ask wait <job_id>',
         'target: codex',
         'agent_name: codex',
         'mailbox_id: mbx_codex',
+        'summary_status: ok',
         'mailbox_state: blocked',
         'runtime_state: degraded',
         'runtime_health: pane-dead',
@@ -271,6 +277,128 @@ def test_render_queue_includes_runtime_health_fields() -> None:
         'active_inbound_event_id: None',
         'last_inbound_started_at: None',
         'last_inbound_finished_at: None',
+    )
+
+
+def test_render_inbox_summary_only_marks_detail_as_omitted() -> None:
+    payload = {
+        'target': 'claude',
+        'agent': {
+            'agent_name': 'claude',
+            'mailbox_id': 'mbx_claude',
+            'mailbox_state': 'blocked',
+            'lease_version': 1,
+            'queue_depth': 2,
+            'pending_reply_count': 1,
+            'active_inbound_event_id': None,
+        },
+        'summary_status': 'ok',
+        'item_count': 2,
+        'head': {
+            'inbound_event_id': 'iev_2',
+            'event_type': 'task_reply',
+            'status': 'queued',
+            'reply_id': 'rep_1',
+            'source_actor': 'codex',
+            'reply_terminal_status': 'completed',
+            'reply_notice': False,
+            'reply_notice_kind': None,
+            'job_id': 'job_123',
+            'reply_finished_at': '2026-03-30T00:00:10Z',
+            'reply': 'done',
+        },
+        'items': [],
+    }
+
+    inbox_lines = render_inbox(payload)
+
+    assert 'item_count: 2' in inbox_lines
+    assert 'reply: done' in inbox_lines
+    assert 'inbox_details: omitted; rerun with `ccb pend --inbox --detail <agent>` or `ccb inbox --detail <agent>` for inbox-item detail' in inbox_lines
+
+
+def test_render_queue_summary_only_marks_detail_as_omitted() -> None:
+    payload = {
+        'target': 'codex',
+        'agent': {
+            'agent_name': 'codex',
+            'mailbox_id': 'mbx_codex',
+            'summary_status': 'ok',
+            'mailbox_state': 'blocked',
+            'runtime_state': 'degraded',
+            'runtime_health': 'pane-dead',
+            'lease_version': 2,
+            'queue_depth': 1,
+            'pending_reply_count': 0,
+            'active_inbound_event_id': None,
+            'last_inbound_started_at': None,
+            'last_inbound_finished_at': None,
+        },
+    }
+
+    queue_lines = render_queue(payload)
+
+    assert 'queue_depth: 1' in queue_lines
+    assert 'queue_details: omitted; rerun with `ccb pend --queue --detail <agent>` or `ccb queue --detail <agent>` for queued-event detail' in queue_lines
+
+
+def test_render_queue_missing_summary_marks_degraded_state() -> None:
+    payload = {
+        'target': 'codex',
+        'agent': {
+            'agent_name': 'codex',
+            'mailbox_id': 'mbx_codex',
+            'summary_status': 'missing',
+            'summary_error': None,
+            'mailbox_state': None,
+            'runtime_state': 'idle',
+            'runtime_health': 'restored',
+            'lease_version': 0,
+            'queue_depth': 0,
+            'pending_reply_count': 0,
+            'active_inbound_event_id': None,
+            'last_inbound_started_at': None,
+            'last_inbound_finished_at': None,
+        },
+    }
+
+    queue_lines = render_queue(payload)
+
+    assert queue_lines[0] == 'queue_status: degraded'
+    assert 'summary_status: missing' in queue_lines
+    assert (
+        'summary_notice: persisted mailbox summary is missing; routine observer view is degraded; use `ccb doctor` or wait for maintenance refresh'
+        in queue_lines
+    )
+
+
+def test_render_inbox_summary_error_marks_degraded_state() -> None:
+    payload = {
+        'target': 'claude',
+        'summary_status': 'error',
+        'summary_error': 'broken summary',
+        'agent': {
+            'agent_name': 'claude',
+            'mailbox_id': 'mbx_claude',
+            'mailbox_state': None,
+            'lease_version': 0,
+            'queue_depth': 0,
+            'pending_reply_count': 0,
+            'active_inbound_event_id': None,
+        },
+        'item_count': 0,
+        'head': {},
+        'items': [],
+    }
+
+    inbox_lines = render_inbox(payload)
+
+    assert inbox_lines[0] == 'inbox_status: degraded'
+    assert 'summary_status: error' in inbox_lines
+    assert 'summary_error: broken summary' in inbox_lines
+    assert (
+        'summary_notice: persisted mailbox summary is unreadable; routine observer view is degraded; use `ccb doctor` for diagnostics'
+        in inbox_lines
     )
 
 
@@ -295,6 +423,10 @@ def test_render_watch_batch_emits_terminal_footer() -> None:
     assert render_watch_batch(batch) == (
         'event: evt-1 job-1 agent1 job_started 2026-03-18T00:00:00Z',
         'watch_status: terminal',
+        'observer_view: watch',
+        'observer_authority: supplementary_snapshot',
+        'observer_terminal: true',
+        'observer_notice: weak observer surface; terminal snapshot shown; use ccb trace <id> for authoritative lineage',
         'job_id: job-1',
         'agent_name: agent1',
         'target_name: agent1',
@@ -337,11 +469,26 @@ def test_render_ask_and_watch_batch_use_target_name_when_present() -> None:
     assert render_watch_batch(batch) == (
         'event: evt-1 job-1 reviewer job_started 2026-03-18T00:00:00Z',
         'watch_status: terminal',
+        'observer_view: watch',
+        'observer_authority: supplementary_snapshot',
+        'observer_terminal: true',
+        'observer_notice: weak observer surface; terminal snapshot shown; use ccb trace <id> for authoritative lineage',
         'job_id: job-1',
         'agent_name: reviewer',
         'target_name: reviewer',
         'status: completed',
         'reply: done',
+    )
+
+
+def test_render_observer_notice_marks_watch_stream_as_weak_non_terminal_surface() -> None:
+    from cli.render import render_observer_notice
+
+    assert render_observer_notice(view='watch', terminal=False) == (
+        'observer_view: watch',
+        'observer_authority: supplementary_snapshot',
+        'observer_terminal: false',
+        'observer_notice: weak observer surface; non-terminal state may change; prefer ccb ask --wait / ccb ask wait <job_id>',
     )
 
 
@@ -399,29 +546,29 @@ def test_render_ps_and_doctor_keep_expected_line_shapes() -> None:
         },
         'ccbd': {
             'state': 'mounted',
-            'socket_path': '/tmp/ccb-runtime/ccbd-proj.sock',
+            'socket_path': '/home/demo/.local/state/ccb/projects/proj-1/ccbd/ccbd.sock',
             'project_anchor_path': '/mnt/e/repo/.ccb',
             'runtime_state_root': '/home/demo/.local/state/ccb/projects/proj-1',
             'runtime_root_kind': 'relocated',
             'runtime_relocation_reason': 'wsl_drvfs',
             'runtime_filesystem_hint': 'wsl_drvfs',
             'runtime_marker_status': 'ok',
-            'preferred_socket_path': '/mnt/e/repo/.ccb/ccbd/ccbd.sock',
-            'effective_socket_path': '/tmp/ccb-runtime/ccbd-proj.sock',
-            'preferred_socket_path_bytes': 31,
-            'effective_socket_path_bytes': 31,
+            'preferred_socket_path': '/home/demo/.local/state/ccb/projects/proj-1/ccbd/ccbd.sock',
+            'effective_socket_path': '/home/demo/.local/state/ccb/projects/proj-1/ccbd/ccbd.sock',
+            'preferred_socket_path_bytes': 58,
+            'effective_socket_path_bytes': 58,
             'socket_root_kind': 'runtime',
-            'socket_fallback_reason': 'unsupported_filesystem',
-            'socket_filesystem_hint': 'wsl_drvfs',
-            'tmux_socket_path': '/tmp/ccb-runtime/tmux-proj.sock',
-            'tmux_preferred_socket_path': '/mnt/e/repo/.ccb/ccbd/tmux.sock',
-            'tmux_effective_socket_path': '/tmp/ccb-runtime/tmux-proj.sock',
-            'tmux_preferred_socket_path_bytes': 31,
-            'tmux_effective_socket_path_bytes': 31,
-            'tmux_start_server_command': 'tmux -S /tmp/ccb-runtime/tmux-proj.sock start-server',
+            'socket_fallback_reason': None,
+            'socket_filesystem_hint': None,
+            'tmux_socket_path': '/home/demo/.local/state/ccb/projects/proj-1/ccbd/tmux.sock',
+            'tmux_preferred_socket_path': '/home/demo/.local/state/ccb/projects/proj-1/ccbd/tmux.sock',
+            'tmux_effective_socket_path': '/home/demo/.local/state/ccb/projects/proj-1/ccbd/tmux.sock',
+            'tmux_preferred_socket_path_bytes': 58,
+            'tmux_effective_socket_path_bytes': 58,
+            'tmux_start_server_command': 'tmux -S /home/demo/.local/state/ccb/projects/proj-1/ccbd/tmux.sock start-server',
             'tmux_socket_root_kind': 'runtime',
-            'tmux_socket_fallback_reason': 'unsupported_filesystem',
-            'tmux_socket_filesystem_hint': 'wsl_drvfs',
+            'tmux_socket_fallback_reason': None,
+            'tmux_socket_filesystem_hint': None,
             'health': 'healthy',
             'generation': 1,
             'last_heartbeat_at': '2026-03-18T00:00:00Z',
@@ -430,6 +577,11 @@ def test_render_ps_and_doctor_keep_expected_line_shapes() -> None:
             'heartbeat_fresh': True,
             'takeover_allowed': False,
             'reason': 'healthy',
+            'last_request_queue_wait_s': 0.012,
+            'last_submit_duration_s': 0.034,
+            'last_ping_duration_s': 0.056,
+            'last_maintenance_duration_s': 0.078,
+            'pending_maintenance_ticks': 2.0,
             'active_execution_count': 0,
             'recoverable_execution_count': 0,
             'nonrecoverable_execution_count': 0,
@@ -481,6 +633,28 @@ def test_render_ps_and_doctor_keep_expected_line_shapes() -> None:
                 'execution_restore_mode': 'provider_resume',
                 'execution_restore_reason': None,
                 'execution_restore_detail': 'resume ok',
+                'mailbox_summary_version': 4,
+                'mailbox_summary_source': 'transition-terminal',
+                'mailbox_summary_refreshed_at': '2026-05-08T00:00:05Z',
+                'mailbox_state': 'blocked',
+                'mailbox_queue_depth': 1,
+                'mailbox_pending_reply_count': 1,
+                'mailbox_active_inbound_event_id': None,
+                'mailbox_head_inbound_event_id': 'iev_1',
+                'mailbox_head_event_type': 'task_reply',
+                'mailbox_head_status': 'queued',
+                'mailbox_consistency_status': 'mismatch',
+                'mailbox_consistency_mismatches': ('queue_depth', 'pending_reply_count'),
+                'mailbox_consistency_error': None,
+                'mailbox_consistency_projected': {
+                    'mailbox_state': 'blocked',
+                    'queue_depth': 2,
+                    'pending_reply_count': 2,
+                    'active_inbound_event_id': None,
+                    'head_inbound_event_id': 'iev_1',
+                    'head_event_type': 'task_reply',
+                    'head_status': 'queued',
+                },
             }
         ],
     }
@@ -502,18 +676,23 @@ def test_render_ps_and_doctor_keep_expected_line_shapes() -> None:
     assert 'requirement_tmux_available: True' in doctor_lines
     assert 'requirement_provider: name=codex executable=codex available=True path=/usr/bin/codex' in doctor_lines
     assert 'ccbd_state: mounted' in doctor_lines
-    assert 'ccbd_effective_socket_path: /tmp/ccb-runtime/ccbd-proj.sock' in doctor_lines
-    assert 'ccbd_effective_socket_path_bytes: 31' in doctor_lines
+    assert 'ccbd_effective_socket_path: /home/demo/.local/state/ccb/projects/proj-1/ccbd/ccbd.sock' in doctor_lines
+    assert 'ccbd_effective_socket_path_bytes: 58' in doctor_lines
     assert 'ccbd_project_anchor_path: /mnt/e/repo/.ccb' in doctor_lines
     assert 'ccbd_runtime_state_root: /home/demo/.local/state/ccb/projects/proj-1' in doctor_lines
     assert 'ccbd_runtime_root_kind: relocated' in doctor_lines
     assert 'ccbd_runtime_relocation_reason: wsl_drvfs' in doctor_lines
     assert 'ccbd_runtime_filesystem_hint: wsl_drvfs' in doctor_lines
     assert 'ccbd_runtime_marker_status: ok' in doctor_lines
-    assert 'ccbd_socket_fallback_reason: unsupported_filesystem' in doctor_lines
-    assert 'ccbd_tmux_effective_socket_path: /tmp/ccb-runtime/tmux-proj.sock' in doctor_lines
-    assert 'ccbd_tmux_effective_socket_path_bytes: 31' in doctor_lines
-    assert 'ccbd_tmux_start_server_command: tmux -S /tmp/ccb-runtime/tmux-proj.sock start-server' in doctor_lines
+    assert 'ccbd_socket_fallback_reason: None' in doctor_lines
+    assert 'ccbd_last_request_queue_wait_s: 0.012' in doctor_lines
+    assert 'ccbd_last_submit_duration_s: 0.034' in doctor_lines
+    assert 'ccbd_last_ping_duration_s: 0.056' in doctor_lines
+    assert 'ccbd_last_maintenance_duration_s: 0.078' in doctor_lines
+    assert 'ccbd_pending_maintenance_ticks: 2.0' in doctor_lines
+    assert 'ccbd_tmux_effective_socket_path: /home/demo/.local/state/ccb/projects/proj-1/ccbd/tmux.sock' in doctor_lines
+    assert 'ccbd_tmux_effective_socket_path_bytes: 58' in doctor_lines
+    assert 'ccbd_tmux_start_server_command: tmux -S /home/demo/.local/state/ccb/projects/proj-1/ccbd/tmux.sock start-server' in doctor_lines
     assert 'ccbd_namespace_tmux_session_name: ccb-repo' in doctor_lines
     assert 'agent: name=codex health=healthy provider=codex completion=protocol_turn' in doctor_lines
     assert (
@@ -522,6 +701,16 @@ def test_render_ps_and_doctor_keep_expected_line_shapes() -> None:
         'socket=sock-a socket_path=None pane=%1 active_pane=%1 pane_state=alive marker=CCB-codex'
     ) in doctor_lines
     assert 'restore: supported=True mode=provider_resume reason=None' in doctor_lines
+    assert (
+        'mailbox_summary: version=4 source=transition-terminal refreshed_at=2026-05-08T00:00:05Z '
+        'state=blocked queue=1 pending_reply=1 active=None head=iev_1 head_type=task_reply head_status=queued'
+    ) in doctor_lines
+    assert (
+        'mailbox_consistency: status=mismatch mismatches=queue_depth,pending_reply_count '
+        'projected_state=blocked projected_queue=2 projected_pending_reply=2 '
+        'projected_active=None projected_head=iev_1 projected_head_type=task_reply '
+        'projected_head_status=queued'
+    ) in doctor_lines
 
 
 def test_render_start_and_kill_include_tmux_cleanup_summary() -> None:
@@ -733,6 +922,7 @@ def test_render_trace_keeps_line_protocol_shape() -> None:
 def test_render_inbox_and_ack_include_reply_delivery_details() -> None:
     inbox_payload = {
         'target': 'claude',
+        'summary_status': 'ok',
         'agent': {
             'agent_name': 'claude',
             'mailbox_id': 'mbx_claude',
@@ -795,6 +985,9 @@ def test_render_inbox_and_ack_include_reply_delivery_details() -> None:
     inbox_lines = render_inbox(inbox_payload)
 
     assert inbox_lines[0] == 'inbox_status: ok'
+    assert 'observer_view: inbox' in inbox_lines
+    assert 'observer_authority: supplementary_snapshot' in inbox_lines
+    assert 'observer_terminal: true' in inbox_lines
     assert 'head_reply_id: rep_1' in inbox_lines
     assert 'head_reply_notice: false' in inbox_lines
     assert 'head_reply_job_id: job_123' in inbox_lines

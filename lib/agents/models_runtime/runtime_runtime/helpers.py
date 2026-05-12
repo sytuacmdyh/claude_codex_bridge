@@ -37,6 +37,7 @@ def normalize_runtime_defaults(runtime) -> None:
     runtime.reconcile_state = normalized_text(runtime.reconcile_state) or default_reconcile_state(runtime.state)
     runtime.last_reconcile_at = normalized_text(runtime.last_reconcile_at)
     runtime.last_failure_reason = normalized_text(runtime.last_failure_reason)
+    runtime.mount_attempt_id = normalized_text(getattr(runtime, 'mount_attempt_id', None))
 
 
 def validate_runtime_fields(runtime) -> None:

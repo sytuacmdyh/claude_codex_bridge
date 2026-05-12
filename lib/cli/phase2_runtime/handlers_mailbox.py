@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 
 def handle_ping(context, command, out, services) -> int:
     payload = services.ping_target(context, command)
@@ -8,6 +10,22 @@ def handle_ping(context, command, out, services) -> int:
 
 
 def handle_pend(context, command, out, services) -> int:
+    if getattr(command, 'observer_mode', 'snapshot') == 'watch':
+        services.write_lines(out, services.render_observer_notice(view='watch', terminal=False))
+        watch_command = SimpleNamespace(target=command.target)
+        for batch in services.watch_target(context, watch_command):
+            services.write_lines(out, services.render_watch_batch(batch))
+        return 0
+    if getattr(command, 'observer_mode', 'snapshot') == 'inbox':
+        inbox_command = SimpleNamespace(agent_name=command.target, detail=bool(command.detail))
+        payload = services.inbox_target(context, inbox_command)
+        services.write_lines(out, services.render_inbox(payload))
+        return 0
+    if getattr(command, 'observer_mode', 'snapshot') == 'queue':
+        queue_command = SimpleNamespace(target=command.target, detail=bool(command.detail))
+        payload = services.queue_target(context, queue_command)
+        services.write_lines(out, services.render_queue(payload))
+        return 0
     payload = services.pend_target(context, command)
     services.write_lines(out, services.render_pend(payload))
     return 0
@@ -56,6 +74,7 @@ def handle_ack(context, command, out, services) -> int:
 
 
 def handle_watch(context, command, out, services) -> int:
+    services.write_lines(out, services.render_observer_notice(view='watch', terminal=False))
     for batch in services.watch_target(context, command):
         services.write_lines(out, services.render_watch_batch(batch))
     return 0

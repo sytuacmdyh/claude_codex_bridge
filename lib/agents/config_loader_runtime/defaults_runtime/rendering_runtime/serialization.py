@@ -101,6 +101,8 @@ def _provider_profile_config_dict(spec) -> dict[str, object] | None:
         payload['inherit_skills'] = profile.inherit_skills
     if profile.inherit_commands != default_profile.inherit_commands:
         payload['inherit_commands'] = profile.inherit_commands
+    if profile.inherit_memory != default_profile.inherit_memory:
+        payload['inherit_memory'] = profile.inherit_memory
     return payload or None
 
 

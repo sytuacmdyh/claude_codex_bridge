@@ -67,15 +67,29 @@ def print_start_help(*, file=None) -> None:
               ccb -n               Rebuild .ccb except ccb.config, then start fresh.
               ccb kill             Stop the current project's background runtime.
               ccb kill -f          Force cleanup project-owned runtime residue.
+              ccb cleanup          Prune safe provider rebuildable caches after ccbd is stopped.
 
-            Model control plane:
+            Core commands:
               ccb ask <agent> [from <sender>] <message>
-              ccb ping <agent|ccbd>
-              ccb pend <agent|job_id> [N]
-              ccb watch <agent|job_id>
+              ccb doctor
 
-            Advanced diagnostics:
-              ccb ps | ccb logs <agent> | ccb doctor
+            Secondary control-plane status:
+              ccb ping <agent|ccbd>
+
+            Supplementary observer:
+              ccb pend <agent|job_id> [N]
+              ccb pend --watch <agent|job_id>
+              ccb pend --inbox [--detail] <agent>
+              ccb pend --queue [--detail] <agent|all>
+
+            Advanced views:
+              ccb queue [--detail] <agent|all>
+              ccb trace <id>
+
+            Advanced recovery:
+              ccb repair <ack|retry|resubmit> ...
+
+            Management:
               ccb version | ccb update | ccb uninstall | ccb reinstall | ccb resync-skills
             """
         ).strip(),
@@ -115,51 +129,176 @@ _COMMAND_HELP = {
     "ping": """
         usage: ccb ping <agent|all|ccbd>
 
-        Control-plane health:
-          ccb ping <agent>   Show runtime health for one named agent.
-          ccb ping all       Show mounted-agent health across the project.
-          ccb ping ccbd      Show project daemon health.
+        Light control-plane status:
+          ccb ping <agent>   Show cached runtime status for one named agent.
+          ccb ping all       Show cached mounted-agent status across the project.
+          ccb ping ccbd      Show cached project daemon status.
     """,
     "pend": """
-        usage: ccb pend <agent|job_id> [N]
+        usage: ccb pend [--watch|--inbox|--queue] [--detail] <agent|job_id|all> [N]
 
-        Reply inspection:
-          ccb pend <agent>      Show the latest reply for one agent mailbox.
-          ccb pend <job_id>     Show the latest reply for one submitted job.
-          ccb pend <target> N   Show the latest N replies.
+        Weak observer surface:
+          Primary weak observer entrypoint:
+            ccb pend <agent>                    Show a non-authoritative observer snapshot for one agent.
+            ccb pend <job_id>                   Show a non-authoritative observer snapshot for one submitted job.
+            ccb pend --watch <agent|job_id>     Stream non-authoritative observer events via the converged observer entrypoint.
+            ccb pend --inbox <agent>            Show a non-authoritative inbox summary via the converged observer entrypoint.
+            ccb pend --inbox --detail <agent>   Expand inbox-item detail via the converged observer entrypoint.
+            ccb pend --queue <agent|all>        Show the same non-authoritative backlog summary exposed by `ccb queue`.
+            ccb pend --queue --detail <agent>   Expand queued-event detail through the observer entrypoint.
+            ccb pend <target> N                 Show the latest N observer snapshot items.
+          Prefer `ccb ask --wait` / `ccb ask wait <job_id>` for terminal results and `ccb trace <id>` for lineage.
     """,
     "watch": """
         usage: ccb watch <agent|job_id>
 
-        Live reply stream:
-          ccb watch <agent>   Stream the current mailbox/reply state for one agent.
-          ccb watch <job_id>  Stream job events until terminal completion or timeout.
+        Weak observer compatibility entrypoint:
+          ccb watch <agent>   Stream non-authoritative observer events for one agent.
+          ccb watch <job_id>  Stream non-authoritative observer events for one job until terminal completion or timeout.
+          Prefer `ccb pend --watch <agent|job_id>` as the converged observer entrypoint.
+          Do not treat non-terminal watch output as authoritative completion.
+          Prefer `ccb ask --wait` / `ccb ask wait <job_id>` for terminal results and `ccb trace <id>` for lineage.
+    """,
+    "queue": """
+        usage: ccb queue [--detail] <agent_name|all>
+
+        Advanced backlog view:
+          ccb queue <agent_name>            Show a non-authoritative observer summary for one agent.
+          ccb queue --detail <agent_name>   Expand queued-event details for one agent.
+          ccb queue all                     Show non-authoritative observer backlog state across the project.
+          `ccb pend --queue [--detail] <agent|all>` remains the equivalent weak-observer form.
+          Prefer `ccb ask --wait` / `ccb ask wait <job_id>` for terminal results and `ccb trace <id>` for lineage.
+    """,
+    "trace": """
+        usage: ccb trace <submission_id|message_id|attempt_id|reply_id|job_id>
+
+        Advanced lineage view:
+          ccb trace <id>   Show the full job/message/reply lineage for one id.
+    """,
+    "inbox": """
+        usage: ccb inbox [--detail] <agent_name>
+
+        Weak observer compatibility entrypoint:
+          ccb inbox <agent_name>            Show a non-authoritative observer summary for one agent.
+          ccb inbox --detail <agent_name>   Expand inbox-item detail for one agent.
+          Prefer `ccb pend --inbox [--detail] <agent>` as the converged observer entrypoint.
+          Prefer `ccb ask --wait` / `ccb ask wait <job_id>` for terminal results and `ccb trace <id>` for lineage.
     """,
     "logs": """
         usage: ccb logs <agent>
 
-        Runtime diagnostics:
+        Runtime diagnostics compatibility view:
           ccb logs <agent>   Tail the current runtime/session log for one agent.
+          Prefer `ccb doctor logs <agent>` as the converged diagnostics entrypoint.
+    """,
+    "doctor-logs": """
+        usage: ccb doctor logs <agent>
+
+        Runtime log diagnostics subview:
+          ccb doctor logs <agent>   Tail the current runtime/session log for one agent through the primary diagnostics entrypoint.
+          `ccb logs <agent>` remains a compatibility alias.
     """,
     "ps": """
         usage: ccb ps
 
-        Runtime inventory:
+        Runtime diagnostics compatibility view:
           ccb ps   Show known runtime/session/workspace bindings.
+          Prefer `ccb doctor ps` as the converged diagnostics entrypoint.
+    """,
+    "doctor-ps": """
+        usage: ccb doctor ps
+
+        Runtime diagnostics subview:
+          ccb doctor ps   Show known runtime/session/workspace bindings through the primary diagnostics entrypoint.
+          `ccb ps` remains a compatibility alias.
+    """,
+    "doctor-storage": """
+        usage: ccb doctor storage [--json]
+
+        Storage diagnostics subview:
+          ccb doctor storage        Show .ccb storage class totals and largest entries.
+          ccb doctor storage --json Emit full storage classification payload.
+    """,
+    "cleanup": """
+        usage: ccb cleanup
+
+        Storage cleanup:
+          ccb cleanup   Prune safe provider rebuildable caches after ccbd is stopped.
+
+        Safety:
+          - Refuses to run while ccbd is active or ask jobs are pending/running.
+          - Keeps Claude's current version and one rollback version.
+          - Does not remove provider sessions, auth, plugin bundles, mailbox data, or runtime authority.
+          - Use `ccb doctor storage` before cleanup to inspect storage classes.
     """,
     "doctor": """
-        usage: ccb doctor [--output [PATH]]
+        usage: ccb doctor [ps|logs <agent>|storage] [--output [PATH]]
 
-        Diagnostics bundle:
+        Deep diagnostics:
           ccb doctor               Print project diagnostic summary.
+          ccb doctor ps            Show the runtime/session/workspace diagnostics subview.
+          ccb doctor logs <agent>  Tail the runtime/session log diagnostics subview for one agent.
+          ccb doctor storage       Show .ccb storage class totals.
           ccb doctor --output      Export a support bundle to the default path.
           ccb doctor --output PATH Export a support bundle to PATH.
+          `ccb ps` and `ccb logs <agent>` remain compatibility entrypoints.
     """,
     "cancel": """
         usage: ccb cancel <job_id>
 
-        Job control:
-          ccb cancel <job_id>   Request cancellation for a submitted job.
+        Job control view:
+          ccb cancel <job_id>   Request cancellation for one submitted job.
+    """,
+    "ack": """
+        usage: ccb ack <agent_name> [inbound_event_id]
+
+        Advanced recovery compatibility entrypoint:
+          ccb ack <agent_name> [inbound_event_id]   Acknowledge reply/inbox progress for one agent.
+          Prefer `ccb repair ack <agent_name> [inbound_event_id]` as the converged recovery entrypoint.
+    """,
+    "repair-ack": """
+        usage: ccb repair ack <agent_name> [inbound_event_id]
+
+        Advanced recovery subcommand:
+          ccb repair ack <agent_name> [inbound_event_id]   Acknowledge reply/inbox progress for one agent.
+          `ccb ack <agent_name> [inbound_event_id]` remains a compatibility alias.
+    """,
+    "retry": """
+        usage: ccb retry <job_id|attempt_id>
+
+        Advanced recovery compatibility entrypoint:
+          ccb retry <job_id|attempt_id>   Retry one failed or incomplete job/attempt lineage.
+          Prefer `ccb repair retry <job_id|attempt_id>` as the converged recovery entrypoint.
+    """,
+    "repair-retry": """
+        usage: ccb repair retry <job_id|attempt_id>
+
+        Advanced recovery subcommand:
+          ccb repair retry <job_id|attempt_id>   Retry one failed or incomplete job/attempt lineage.
+          `ccb retry <job_id|attempt_id>` remains a compatibility alias.
+    """,
+    "resubmit": """
+        usage: ccb resubmit <message_id>
+
+        Advanced recovery compatibility entrypoint:
+          ccb resubmit <message_id>   Create a fresh submission from one prior message lineage.
+          Prefer `ccb repair resubmit <message_id>` as the converged recovery entrypoint.
+    """,
+    "repair-resubmit": """
+        usage: ccb repair resubmit <message_id>
+
+        Advanced recovery subcommand:
+          ccb repair resubmit <message_id>   Create a fresh submission from one prior message lineage.
+          `ccb resubmit <message_id>` remains a compatibility alias.
+    """,
+    "repair": """
+        usage: ccb repair <ack|retry|resubmit> ...
+
+        Advanced recovery:
+          ccb repair ack <agent_name> [inbound_event_id]   Acknowledge reply/inbox progress for one agent.
+          ccb repair retry <job_id|attempt_id>             Retry one failed or incomplete job/attempt lineage.
+          ccb repair resubmit <message_id>                 Create a fresh submission from one prior message lineage.
+          Legacy `ack` / `retry` / `resubmit` commands remain compatibility entrypoints.
     """,
     "config": """
         usage: ccb config validate

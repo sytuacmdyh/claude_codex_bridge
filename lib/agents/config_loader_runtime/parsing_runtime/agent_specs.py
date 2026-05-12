@@ -40,6 +40,7 @@ def build_agent_spec(agent_name: str, raw: dict[str, Any]) -> AgentSpec:
         if raw.get('provider_profile') is not None
         else ProviderProfileSpec()
     )
+    _validate_provider_profile_runtime_home(agent_name, provider=provider, provider_profile=provider_profile)
     if api != AgentApiSpec():
         provider_profile = _apply_agent_api_shortcut(
             agent_name,
@@ -185,6 +186,7 @@ def _apply_agent_api_shortcut(
         inherit_config=inherit_config,
         inherit_skills=provider_profile.inherit_skills,
         inherit_commands=provider_profile.inherit_commands,
+        inherit_memory=provider_profile.inherit_memory,
     )
 
 
@@ -202,6 +204,20 @@ def _ensure_no_api_env_conflict(
     rendered_source = source.format(agent=agent_name)
     raise ConfigValidationError(
         f'agents.{agent_name}.key/url cannot be mixed with provider API env in {rendered_source}: {joined}'
+    )
+
+
+def _validate_provider_profile_runtime_home(
+    agent_name: str,
+    *,
+    provider: str,
+    provider_profile: ProviderProfileSpec,
+) -> None:
+    normalized_provider = str(provider or '').strip().lower()
+    if normalized_provider == 'codex' or provider_profile.home is None:
+        return
+    raise ConfigValidationError(
+        f'agents.{agent_name}.provider_profile.home is supported only for codex runtime_home overrides'
     )
 
 

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from agents.models import ProjectConfig, ProjectLayoutPlan, build_project_layout_plan
 from cli.context import CliContext
 from terminal_runtime import TmuxBackend
+from terminal_runtime.placeholders import pane_placeholder_cmd
 from terminal_runtime.tmux_identity import apply_ccb_pane_identity
 
 
@@ -91,7 +92,13 @@ def _materialize_layout(
     right_count = max(1, node.right.leaf_count)
     percent = max(1, min(99, round((right_count * 100) / total)))
     direction = 'right' if node.kind == 'horizontal' else 'bottom'
-    new_pane_id = backend.create_pane('', cwd, direction=direction, percent=percent, parent_pane=parent_pane_id)
+    new_pane_id = backend.split_pane(
+        parent_pane_id,
+        direction=direction,
+        percent=percent,
+        cmd=pane_placeholder_cmd(),
+        cwd=cwd,
+    )
     _materialize_layout(
         backend,
         parent_pane_id=parent_pane_id,

@@ -18,6 +18,8 @@ class RuntimeSupervisionContext:
     clock: Callable[[], str]
     generation_getter: Callable[[], object | None]
     event_store: SupervisionEventStore
+    mount_missing_runtime_fn: Callable[[str], bool]
+    supervision_suspended_fn: Callable[[], bool]
 
 
 def build_runtime_supervision_context(
@@ -32,6 +34,8 @@ def build_runtime_supervision_context(
     clock,
     generation_getter=None,
     event_store: SupervisionEventStore | None = None,
+    mount_missing_runtime_fn: Callable[[str], bool] | None = None,
+    supervision_suspended_fn: Callable[[], bool] | None = None,
 ) -> RuntimeSupervisionContext:
     return RuntimeSupervisionContext(
         project_id=project_id,
@@ -44,6 +48,8 @@ def build_runtime_supervision_context(
         clock=clock,
         generation_getter=generation_getter or (lambda: None),
         event_store=event_store or SupervisionEventStore(layout),
+        mount_missing_runtime_fn=mount_missing_runtime_fn or (lambda agent_name: True),
+        supervision_suspended_fn=supervision_suspended_fn or (lambda: False),
     )
 
 

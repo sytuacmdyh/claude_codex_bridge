@@ -92,6 +92,27 @@ def test_reset_project_state_fails_fast_when_runtime_cleanup_cannot_stop_project
     assert (ccb_dir / 'agents' / 'agent1' / 'runtime.json').is_file()
 
 
+def test_reset_project_state_drops_invalid_runtime_root_ref(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / 'repo-reset-invalid-ref'
+    ccb_dir = project_root / '.ccb'
+    ccb_dir.mkdir(parents=True)
+    (ccb_dir / 'ccb.config').write_text('cmd; agent1:codex\n', encoding='utf-8')
+    (ccb_dir / 'runtime-root-ref.json').write_text(
+        '{"schema_version":1,"record_type":"ccb_runtime_root_ref","project_id":"proj-1","runtime_state_root":"relative/state"}',
+        encoding='utf-8',
+    )
+    (ccb_dir / 'agents' / 'agent1' / 'runtime.json').parent.mkdir(parents=True, exist_ok=True)
+    (ccb_dir / 'agents' / 'agent1' / 'runtime.json').write_text('{}', encoding='utf-8')
+
+    monkeypatch.setattr('cli.services.reset_project._stop_project_runtime', lambda context: None)
+
+    summary = reset_project_state(project_root)
+
+    assert summary.reset_performed is True
+    assert (ccb_dir / 'ccb.config').read_text(encoding='utf-8') == 'cmd; agent1:codex\n'
+    assert (ccb_dir / 'runtime-root-ref.json').exists() is False
+
+
 def test_reset_project_state_unregisters_git_worktrees_before_clearing_anchor(tmp_path: Path, monkeypatch) -> None:
     project_root = tmp_path / 'repo-reset-git-worktree'
     project_root.mkdir(parents=True)

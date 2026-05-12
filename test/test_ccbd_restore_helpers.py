@@ -79,6 +79,79 @@ def test_iter_runnable_agent_slots_skips_blocked_degraded_runtime() -> None:
     assert [slot.target_name for slot in slots] == ["agent2"]
 
 
+def test_iter_runnable_agent_slots_includes_stopped_runtime_for_handoff() -> None:
+    stopped = _runtime("agent1", state=AgentState.STOPPED, health="unmounted")
+    dispatcher = SimpleNamespace(
+        _config=SimpleNamespace(agents=("agent1",)),
+        _state=SimpleNamespace(
+            active_job=lambda agent_name: None,
+            queue_depth=lambda agent_name: 1,
+        ),
+        _registry=SimpleNamespace(get=lambda agent_name: stopped),
+        _execution_service=object(),
+        _runtime_service=object(),
+        _provider_catalog=SimpleNamespace(get=lambda provider: SimpleNamespace(supports_resume=True)),
+    )
+
+    slots = list(iter_runnable_agent_slots(dispatcher))
+
+    assert [slot.target_name for slot in slots] == ["agent1"]
+    assert slots[0].runtime is stopped
+
+
+def test_refresh_slot_runtime_for_start_ensures_stopped_runtime() -> None:
+    ensured = _runtime("agent1", state=AgentState.IDLE, health="restored")
+    dispatcher = SimpleNamespace(
+        _runtime_service=SimpleNamespace(ensure_ready=lambda agent_name: ensured),
+    )
+    slot = QueuedTargetSlot(
+        target_kind=TargetKind.AGENT,
+        target_name="agent1",
+        runtime=_runtime("agent1", state=AgentState.STOPPED, health="unmounted"),
+    )
+
+    updated = refresh_slot_runtime_for_start(dispatcher, slot)
+
+    assert updated is not None
+    assert updated.runtime is ensured
+
+
+def test_refresh_slot_runtime_for_start_ensures_missing_runtime() -> None:
+    ensured = _runtime("agent1", state=AgentState.IDLE, health="restored")
+    dispatcher = SimpleNamespace(
+        _runtime_service=SimpleNamespace(ensure_ready=lambda agent_name: ensured),
+    )
+    slot = QueuedTargetSlot(
+        target_kind=TargetKind.AGENT,
+        target_name="agent1",
+        runtime=None,
+    )
+
+    updated = refresh_slot_runtime_for_start(dispatcher, slot)
+
+    assert updated is not None
+    assert updated.runtime is ensured
+
+
+def test_refresh_slot_runtime_for_start_drops_stopped_runtime_without_restore_state() -> None:
+    dispatcher = SimpleNamespace(
+        _runtime_service=SimpleNamespace(
+            ensure_ready=lambda agent_name: (_ for _ in ()).throw(
+                AgentValidationError("agent agent1 has no runtime or restore state; start it first")
+            )
+        ),
+    )
+    slot = QueuedTargetSlot(
+        target_kind=TargetKind.AGENT,
+        target_name="agent1",
+        runtime=_runtime("agent1", state=AgentState.STOPPED, health="unmounted"),
+    )
+
+    updated = refresh_slot_runtime_for_start(dispatcher, slot)
+
+    assert updated is None
+
+
 def test_restore_runtime_updates_restore_state_and_attaches_when_runtime_inactive() -> None:
     restore_state = AgentRestoreState(
         restore_mode=RestoreMode.AUTO,

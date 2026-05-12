@@ -161,7 +161,7 @@ start_project() {
   local start_out="${project}/start.out"
   local start_err="${project}/start.err"
   local cmd
-  cmd="env HOME=$(q "${HOME}") PATH=$(q "${PATH}") GEMINI_ROOT=$(q "${GEMINI_ROOT}") CLAUDE_PROJECTS_ROOT=$(q "${CLAUDE_PROJECTS_ROOT}") OPENCODE_STORAGE_ROOT=$(q "${OPENCODE_STORAGE_ROOT}") DROID_SESSIONS_ROOT=$(q "${DROID_SESSIONS_ROOT}") CODEX_SESSION_ROOT=$(q "${CODEX_SESSION_ROOT}") CODEX_START_CMD=$(q "${CODEX_START_CMD}") GEMINI_START_CMD=$(q "${GEMINI_START_CMD}") CLAUDE_START_CMD=$(q "${CLAUDE_START_CMD}") CCB_GEMINI_READY_TIMEOUT_S=$(q "${CCB_GEMINI_READY_TIMEOUT_S}") CCB_CLAUDE_READY_TIMEOUT_S=$(q "${CCB_CLAUDE_READY_TIMEOUT_S}") STUB_DELAY=$(q "${STUB_DELAY}") CCB_TMUX_SOCKET=$(q "${CCB_TMUX_SOCKET}") CCB_CLAUDE_SKILLS=0 CCB_REPLY_LANG=en $(q "${ROOT}/ccb") -a >$(q "${start_out}") 2>$(q "${start_err}"); exec sleep 3600"
+  cmd="env HOME=$(q "${HOME}") PATH=$(q "${PATH}") GEMINI_ROOT=$(q "${GEMINI_ROOT}") CLAUDE_PROJECTS_ROOT=$(q "${CLAUDE_PROJECTS_ROOT}") OPENCODE_STORAGE_ROOT=$(q "${OPENCODE_STORAGE_ROOT}") DROID_SESSIONS_ROOT=$(q "${DROID_SESSIONS_ROOT}") CODEX_SESSION_ROOT=$(q "${CODEX_SESSION_ROOT}") CODEX_START_CMD=$(q "${CODEX_START_CMD}") GEMINI_START_CMD=$(q "${GEMINI_START_CMD}") CLAUDE_START_CMD=$(q "${CLAUDE_START_CMD}") CCB_GEMINI_READY_TIMEOUT_S=$(q "${CCB_GEMINI_READY_TIMEOUT_S}") CCB_CLAUDE_READY_TIMEOUT_S=$(q "${CCB_CLAUDE_READY_TIMEOUT_S}") STUB_DELAY=$(q "${STUB_DELAY}") CCB_TMUX_SOCKET=$(q "${CCB_TMUX_SOCKET}") CCB_CLAUDE_SKILLS=0 CCB_REPLY_LANG=en $(q "${ROOT}/ccb") >$(q "${start_out}") 2>$(q "${start_err}"); exec sleep 3600"
   tmux_cmd new-session -d -s "${session}" -c "${project}" bash -lc "${cmd}"
   SESSIONS+=("${session}")
 }
@@ -308,7 +308,7 @@ check_agent_binding() {
     return
   }
   assert_contains "${ps_out}" "agent: name=${agent} state=idle provider=${provider} queue=0" "ps ${agent}"
-  assert_contains "${ps_out}" "workspace=${project}/.ccb/workspaces/${agent}" "workspace ${agent}"
+  assert_contains "${ps_out}" "workspace=${project}" "workspace ${agent}"
 }
 
 check_agent_ping() {
@@ -328,58 +328,61 @@ check_agent_ping() {
 check_workspace_binding() {
   local project="$1"
   local agent="$2"
-  local workspace="${project}/.ccb/workspaces/${agent}"
-  local binding="${workspace}/.ccb-workspace.json"
-  if [ ! -f "${binding}" ]; then
-    fail "binding file ${agent}"
-    return
-  fi
-  if [ ! -f "${workspace}/.git" ] && [ ! -d "${workspace}/.git" ]; then
-    fail "git worktree ${agent}"
-    return
-  fi
-  if "${PYTHON}" - "${binding}" "${project}" "${workspace}" "${agent}" <<'PY'
-import json
-import sys
-from pathlib import Path
-
-binding_path = Path(sys.argv[1])
-project = Path(sys.argv[2]).resolve()
-workspace = Path(sys.argv[3]).resolve()
-agent = sys.argv[4]
-data = json.loads(binding_path.read_text(encoding='utf-8'))
-assert Path(str(data.get('target_project'))).resolve() == project
-assert Path(str(data.get('workspace_path'))).resolve() == workspace
-assert str(data.get('agent_name')) == agent
-PY
-  then
-    ok "workspace binding ${agent}"
+  if [ "$(git -C "${project}" rev-parse --show-toplevel 2>/dev/null)" = "${project}" ]; then
+    ok "workspace root ${agent}"
   else
-    fail "workspace binding ${agent}"
-  fi
-  if [ "$(git -C "${workspace}" rev-parse --show-toplevel 2>/dev/null)" = "${workspace}" ]; then
-    ok "worktree root ${agent}"
-  else
-    fail "worktree root ${agent}"
-  fi
-  if [ "$(git -C "${workspace}" branch --show-current 2>/dev/null)" = "ccb/${agent}" ]; then
-    ok "worktree branch ${agent}"
-  else
-    fail "worktree branch ${agent}"
+    fail "workspace root ${agent}"
   fi
 }
 
 check_tmux_title() {
-  local agent="$1"
+  local project="$1"
+  local agent="$2"
+  local project_abs
   local pane_out
-  pane_out="$(tmux_cmd list-panes -a -F '#{pane_title} #{@ccb_agent} #{pane_current_path}')" || {
-    fail "tmux pane list"
-    return
-  }
-  if printf '%s\n' "${pane_out}" | grep -E -q "CCB-${agent}-[0-9a-f]{8} ${agent} .*workspaces/${agent}\$"; then
-    ok "tmux title ${agent}"
+  local pane_snapshot
+  local tmux_socket_path
+  project_abs="$(cd "${project}" && pwd -P)"
+  tmux_socket_path="$(project_tmux_socket_path "${project}")"
+  local start
+  start="$(date +%s)"
+  while [ "$(( $(date +%s) - start ))" -lt 10 ]; do
+    pane_out="$(tmux -S "${tmux_socket_path}" list-panes -a -F "$(printf '#{session_name}\t#{window_name}\t#{pane_id}\t#{pane_title}\t#{@ccb_agent}\t#{pane_current_path}')" 2>/dev/null)" || pane_out=""
+    if printf '%s\n' "${pane_out}" | awk -F '\t' -v agent="${agent}" -v project="${project_abs}" '$4 == agent && $5 == agent && $6 == project { found = 1 } END { exit(found ? 0 : 1) }'; then
+      ok "tmux title ${agent}"
+      return
+    fi
+    sleep 0.2
+  done
+  pane_snapshot="${project}/tmux-title-check-${agent}.txt"
+  printf '%s\n' "${pane_out}" >"${pane_snapshot}"
+  fail "tmux title ${agent} (snapshot: ${pane_snapshot})"
+}
+
+project_tmux_socket_path() {
+  local project="$1"
+  local out
+  local resolved
+  out="$(ccb_project "${project}" ping ccbd 2>/dev/null)" || out=""
+  resolved="$(printf '%s\n' "${out}" | awk -F': ' '
+    $1 == "namespace_tmux_socket_path" && $2 != "" {
+      print $2
+      found = 1
+      exit
+    }
+    $1 == "tmux_socket_path" && $2 != "" {
+      fallback = $2
+    }
+    END {
+      if (!found && fallback != "") {
+        print fallback
+      }
+    }
+  ')"
+  if [ -n "${resolved}" ]; then
+    printf '%s\n' "${resolved}"
   else
-    fail "tmux title ${agent}"
+    printf '%s\n' "${project}/.ccb/ccbd/tmux.sock"
   fi
 }
 
@@ -478,12 +481,12 @@ run_mixed_matrix() {
   check_workspace_binding "${project}" "writer"
   check_workspace_binding "${project}" "reviewer"
   check_workspace_binding "${project}" "analyst"
-  check_tmux_title "writer"
-  check_tmux_title "reviewer"
-  check_tmux_title "analyst"
   check_reply_flow "${project}" "writer" "user" "mixed-codex" "mixed writer"
   check_reply_flow "${project}" "reviewer" "writer" "mixed-claude" "mixed reviewer"
   check_reply_flow "${project}" "analyst" "reviewer" "mixed-gemini" "mixed analyst"
+  check_tmux_title "${project}" "writer"
+  check_tmux_title "${project}" "reviewer"
+  check_tmux_title "${project}" "analyst"
   check_broadcast_excludes_sender "${project}"
 }
 
@@ -507,9 +510,6 @@ run_dual_provider_matrix() {
   check_agent_binding "${project}" "${agent_b}" "${provider}"
   check_workspace_binding "${project}" "${agent_a}"
   check_workspace_binding "${project}" "${agent_b}"
-  check_tmux_title "${agent_a}"
-  check_tmux_title "${agent_b}"
-
   local job_a job_b
   job_a="$(ask_job "${project}" "${agent_a}" "user" "${provider}-A")" || {
     fail "dual ${provider} ask ${agent_a}"
@@ -549,6 +549,8 @@ run_dual_provider_matrix() {
   else
     fail "dual ${provider} pend ${agent_b}"
   fi
+  check_tmux_title "${project}" "${agent_a}"
+  check_tmux_title "${project}" "${agent_b}"
 }
 
 run_cross_project_matrix() {
@@ -622,13 +624,18 @@ run_kill_check() {
     fail "kill command"
     return
   fi
-  local ping_out
-  ping_out="$(ccb_project "${project}" ping ccbd)" || ping_out=""
-  if printf '%s\n' "${ping_out}" | grep -F -q 'mount_state: unmounted'; then
-    ok "kill unmounted ccbd"
-  else
-    fail "kill unmounted ccbd"
-  fi
+  local ping_out=""
+  local start
+  start="$(date +%s)"
+  while [ "$(( $(date +%s) - start ))" -lt 20 ]; do
+    ping_out="$(ccb_project "${project}" ping ccbd 2>/dev/null)" || ping_out=""
+    if printf '%s\n' "${ping_out}" | grep -F -q 'mount_state: unmounted'; then
+      ok "kill unmounted ccbd"
+      return
+    fi
+    sleep 0.2
+  done
+  fail "kill unmounted ccbd"
 }
 
 install_stub_providers

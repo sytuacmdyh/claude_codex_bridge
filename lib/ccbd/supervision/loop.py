@@ -28,6 +28,8 @@ class RuntimeSupervisionLoop:
         clock=utc_now,
         generation_getter=None,
         event_store: SupervisionEventStore | None = None,
+        mount_missing_runtime_fn=None,
+        supervision_suspended_fn=None,
     ) -> None:
         self._ctx = build_runtime_supervision_context(
             project_id=project_id,
@@ -40,10 +42,16 @@ class RuntimeSupervisionLoop:
             clock=clock,
             generation_getter=generation_getter,
             event_store=event_store,
+            mount_missing_runtime_fn=mount_missing_runtime_fn,
+            supervision_suspended_fn=supervision_suspended_fn,
         )
 
     def reconcile_once(self) -> dict[str, str]:
         statuses: dict[str, str] = {}
+        if self._ctx.supervision_suspended_fn():
+            for agent_name in self._ctx.config.agents:
+                statuses[agent_name] = 'suspended'
+            return statuses
         reconcile_cmd_slot(self._ctx)
         for agent_name in self._ctx.config.agents:
             statuses[agent_name] = self._reconcile_agent(agent_name)
@@ -52,6 +60,8 @@ class RuntimeSupervisionLoop:
     def _reconcile_agent(self, agent_name: str) -> str:
         runtime = resolved_runtime(self._ctx, agent_name)
         if runtime is None:
+            if not self._ctx.mount_missing_runtime_fn(agent_name):
+                return 'unmounted'
             return ensure_agent_mounted(self._ctx, agent_name, runtime=None)
         if runtime_requires_mount(runtime):
             return ensure_agent_mounted(self._ctx, agent_name, runtime=runtime)

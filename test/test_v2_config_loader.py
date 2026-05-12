@@ -287,6 +287,7 @@ inherit_auth = true
 inherit_config = true
 inherit_skills = false
 inherit_commands = false
+inherit_memory = false
 
 [agents.agent1.provider_profile.env]
 OPENAI_API_KEY = "sk-test"
@@ -302,7 +303,34 @@ OPENAI_API_KEY = "sk-test"
     assert spec.provider_profile.inherit_auth is True
     assert spec.provider_profile.inherit_skills is False
     assert spec.provider_profile.inherit_commands is False
+    assert spec.provider_profile.inherit_memory is False
     assert spec.provider_profile.env == {'OPENAI_API_KEY': 'sk-test'}
+
+
+@pytest.mark.parametrize('provider', ['claude', 'gemini'])
+def test_load_project_config_rejects_non_codex_provider_profile_home(tmp_path: Path, provider: str) -> None:
+    project_root = tmp_path / 'repo'
+    config_path = project_root / '.ccb' / 'ccb.config'
+    _write(
+        config_path,
+        f"""version = 2
+default_agents = ["agent1"]
+
+[agents.agent1]
+provider = "{provider}"
+target = "."
+workspace_mode = "inplace"
+restore = "auto"
+permission = "manual"
+
+[agents.agent1.provider_profile]
+mode = "isolated"
+home = ".ccb/provider-profiles/agent1/{provider}"
+""",
+    )
+
+    with pytest.raises(ConfigValidationError, match='provider_profile\\.home is supported only for codex'):
+        load_project_config(project_root)
 
 
 @pytest.mark.parametrize(

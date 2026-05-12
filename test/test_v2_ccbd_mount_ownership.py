@@ -1072,7 +1072,7 @@ def test_ccbd_heartbeat_recovers_degraded_agent_and_drains_queue(tmp_path: Path,
     assert session.ensure_calls == 1
 
 
-def test_ccbd_heartbeat_starts_missing_agent_and_drains_queue(tmp_path: Path, monkeypatch) -> None:
+def test_ccbd_heartbeat_does_not_proactively_mount_missing_agent_without_start_policy(tmp_path: Path, monkeypatch) -> None:
     project_root = tmp_path / 'repo-heartbeat-mount'
     project_root.mkdir()
     config_path = project_root / '.ccb' / 'ccb.config'
@@ -1125,17 +1125,11 @@ def test_ccbd_heartbeat_starts_missing_agent_and_drains_queue(tmp_path: Path, mo
 
     app.heartbeat()
 
-    assert seen == [(('codex',), False, False, False, False)]
-    running = app.dispatcher.get(job_id)
-    assert running is not None
-    assert running.status.value == 'running'
-    runtime = app.registry.get('codex')
-    assert runtime is not None
-    assert runtime.state is AgentState.BUSY
-    assert runtime.health == 'healthy'
-    assert runtime.runtime_ref == 'tmux:%9'
-    assert runtime.session_ref == 'codex-mounted-session'
-    assert runtime.desired_state == 'mounted'
+    assert seen == []
+    queued = app.dispatcher.get(job_id)
+    assert queued is not None
+    assert queued.status.value == 'accepted'
+    assert app.registry.get('codex') is None
 
 
 def test_ccbd_heartbeat_uses_persisted_start_policy_for_recovery_mount(tmp_path: Path, monkeypatch) -> None:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 from agents.models import AgentRuntime, RuntimeBindingSource
 
 from .attach_records import new_runtime, should_update_existing, updated_runtime
@@ -78,6 +80,11 @@ def attach_runtime(
             timestamp=timestamp,
             project_id=project_id,
         )
+        updated = _resolved_mount_attempt_runtime(
+            existing,
+            updated,
+            binding_source=values.binding_source,
+        )
         return _upsert_authority(registry, updated)
 
     runtime = new_runtime(
@@ -87,6 +94,11 @@ def attach_runtime(
         timestamp=timestamp,
         project_id=project_id,
     )
+    runtime = _resolved_mount_attempt_runtime(
+        existing,
+        runtime,
+        binding_source=values.binding_source,
+    )
     return _upsert_authority(registry, runtime)
 
 
@@ -95,3 +107,18 @@ def _upsert_authority(registry, runtime):
     if callable(upsert_authority):
         return upsert_authority(runtime)
     return registry.upsert(runtime)
+
+
+def _resolved_mount_attempt_runtime(
+    existing: AgentRuntime | None,
+    runtime: AgentRuntime,
+    *,
+    binding_source: RuntimeBindingSource,
+) -> AgentRuntime:
+    if binding_source is RuntimeBindingSource.EXTERNAL_ATTACH:
+        if runtime.mount_attempt_id is None:
+            return runtime
+        return replace(runtime, mount_attempt_id=None)
+    if existing is not None and existing.mount_attempt_id and runtime.mount_attempt_id != existing.mount_attempt_id:
+        return replace(runtime, mount_attempt_id=existing.mount_attempt_id)
+    return runtime

@@ -10,6 +10,7 @@ from ..doctor import doctor_summary
 from .models import DiagnosticBundleEntry, DiagnosticBundleSummary
 from .sources import project_root_sources
 from .staging import create_tarball, stage_file, write_json
+from storage_classification import summarize_storage
 
 
 def export_diagnostic_bundle(context, command) -> DiagnosticBundleSummary:
@@ -19,6 +20,7 @@ def export_diagnostic_bundle(context, command) -> DiagnosticBundleSummary:
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     doctor_data, doctor_error = _doctor_payload(context)
+    storage_data, storage_error = _storage_payload(context)
     entries: list[DiagnosticBundleEntry] = []
 
     support_dir = context.paths.ccbd_support_dir
@@ -33,14 +35,17 @@ def export_diagnostic_bundle(context, command) -> DiagnosticBundleSummary:
             generated_at=generated_at,
             doctor_payload=doctor_data,
             doctor_error=doctor_error,
+            storage_payload=storage_data,
+            storage_error=storage_error,
         )
-        for category, path in project_root_sources(context):
+        for category, path in project_root_sources(context, storage_payload=storage_data):
             entries.append(stage_file(context, stage_root, category=category, source=path))
         manifest = _bundle_manifest(
             context=context,
             generated_at=generated_at,
             bundle_id=bundle_id,
             doctor_error=doctor_error,
+            storage_error=storage_error,
             entries=entries,
         )
         write_json(stage_root / 'manifest.json', manifest)
@@ -60,6 +65,19 @@ def _doctor_payload(context) -> tuple[dict[str, Any], str | None]:
         }, str(exc)
 
 
+def _storage_payload(context) -> tuple[dict[str, Any], str | None]:
+    try:
+        return summarize_storage(context), None
+    except Exception as exc:
+        return {
+            'schema_version': 1,
+            'project': str(context.project.project_root),
+            'project_id': context.project.project_id,
+            'error': str(exc),
+            'entries': [],
+        }, str(exc)
+
+
 def bundle_identifier(*, project_id: str, generated_at: str) -> str:
     safe_time = generated_at.replace(':', '').replace('-', '').replace('.', '').replace('T', 't').replace('Z', 'z')
     return f'ccb-support-{safe_time}-{project_id[:12]}'
@@ -74,8 +92,19 @@ def resolve_output_path(context, command, *, bundle_id: str) -> Path:
     return context.paths.support_bundle_path(bundle_id)
 
 
-def _write_generated_payloads(stage_root: Path, *, context, bundle_id: str, generated_at: str, doctor_payload: dict[str, Any], doctor_error: str | None) -> None:
+def _write_generated_payloads(
+    stage_root: Path,
+    *,
+    context,
+    bundle_id: str,
+    generated_at: str,
+    doctor_payload: dict[str, Any],
+    doctor_error: str | None,
+    storage_payload: dict[str, Any],
+    storage_error: str | None,
+) -> None:
     write_json(stage_root / 'generated' / 'doctor.json', doctor_payload)
+    write_json(stage_root / 'generated' / 'storage-summary.json', storage_payload)
     write_json(
         stage_root / 'generated' / 'bundle-metadata.json',
         {
@@ -84,11 +113,20 @@ def _write_generated_payloads(stage_root: Path, *, context, bundle_id: str, gene
             'project_id': context.project.project_id,
             'bundle_id': bundle_id,
             'doctor_error': doctor_error,
+            'storage_error': storage_error,
         },
     )
 
 
-def _bundle_manifest(*, context, generated_at: str, bundle_id: str, doctor_error: str | None, entries: list[DiagnosticBundleEntry]) -> dict[str, Any]:
+def _bundle_manifest(
+    *,
+    context,
+    generated_at: str,
+    bundle_id: str,
+    doctor_error: str | None,
+    storage_error: str | None,
+    entries: list[DiagnosticBundleEntry],
+) -> dict[str, Any]:
     return {
         'schema_version': 1,
         'record_type': 'ccbd_diagnostic_bundle',
@@ -97,6 +135,7 @@ def _bundle_manifest(*, context, generated_at: str, bundle_id: str, doctor_error
         'project_id': context.project.project_id,
         'bundle_id': bundle_id,
         'doctor_error': doctor_error,
+        'storage_error': storage_error,
         'entries': [
             {
                 'category': entry.category,

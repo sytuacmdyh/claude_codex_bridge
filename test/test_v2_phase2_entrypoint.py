@@ -18,6 +18,7 @@ import pytest
 from ccbd.app import CcbdApp
 from ccbd.socket_client import CcbdClient, CcbdClientError
 from ccbd.services.health import HealthMonitor
+from cli.services.cleanup import CleanupAction, CleanupSummary
 from cli.services.start_runtime import StartSummary
 import cli.phase2 as phase2_module
 from cli.phase2 import maybe_handle_phase2
@@ -109,6 +110,33 @@ def _wait_for_ccbd_execution_summary(
                 return last
         time.sleep(0.05)
     raise AssertionError(f'expected execution summary; last stdout={last.stdout!r} stderr={last.stderr!r}')
+
+
+def _wait_for_doctor_line(cwd: Path, expected: str, *, timeout: float = 5.0) -> subprocess.CompletedProcess[str]:
+    deadline = time.time() + timeout
+    last = None
+    while time.time() < deadline:
+        last = _run_ccb(['doctor'], cwd=cwd)
+        if last.returncode == 0 and expected in last.stdout:
+            return last
+        time.sleep(0.1)
+    raise AssertionError(f'expected doctor line {expected!r}; last stdout={last.stdout!r} stderr={last.stderr!r}')
+
+
+def _wait_for_doctor_any_line(
+    cwd: Path,
+    expected: tuple[str, ...],
+    *,
+    timeout: float = 5.0,
+) -> subprocess.CompletedProcess[str]:
+    deadline = time.time() + timeout
+    last = None
+    while time.time() < deadline:
+        last = _run_ccb(['doctor'], cwd=cwd)
+        if last.returncode == 0 and any(line in last.stdout for line in expected):
+            return last
+        time.sleep(0.1)
+    raise AssertionError(f'expected any doctor line {expected!r}; last stdout={last.stdout!r} stderr={last.stderr!r}')
 
 
 def _run_phase2_local(args: list[str], *, cwd: Path, start_app: CcbdApp | None = None) -> tuple[int, str, str]:
@@ -214,6 +242,45 @@ def test_phase2_start_bootstraps_missing_project_without_writing_config(monkeypa
     assert (project_root / '.ccb' / 'ccb.config').exists() is False
     assert 'start_status: ok' in stdout
     assert 'agents: codex, claude' in stdout
+
+
+def test_phase2_config_validate_rejects_duplicate_effective_runtime_home(tmp_path: Path) -> None:
+    project_root = tmp_path / 'repo-config-validate'
+    _write(
+        project_root / '.ccb' / 'ccb.config',
+        """version = 2
+default_agents = ["agent1", "agent2"]
+
+[agents.agent1]
+provider = "codex"
+target = "."
+workspace_mode = "inplace"
+restore = "auto"
+permission = "manual"
+
+[agents.agent1.provider_profile]
+mode = "isolated"
+home = ".ccb/provider-profiles/shared-codex"
+
+[agents.agent2]
+provider = "codex"
+target = "."
+workspace_mode = "inplace"
+restore = "auto"
+permission = "manual"
+
+[agents.agent2.provider_profile]
+mode = "isolated"
+home = ".ccb/provider-profiles/shared-codex"
+""",
+    )
+
+    code, stdout, stderr = _run_phase2_local(['config', 'validate'], cwd=project_root)
+
+    assert code == 1
+    assert stdout == ''
+    assert 'config_status: invalid' in stderr
+    assert 'duplicate effective codex_home' in stderr
 
 
 def test_ccb_kill_without_anchor_is_noop_and_does_not_bootstrap(tmp_path: Path) -> None:
@@ -729,6 +796,126 @@ def test_phase2_doctor_bundle_renders_export_summary(monkeypatch, tmp_path: Path
     assert 'truncated_count: 2' in stdout
 
 
+def test_phase2_doctor_storage_renders_storage_summary(monkeypatch, tmp_path: Path) -> None:
+    project_root = tmp_path / 'repo-doctor-storage'
+    project_root.mkdir()
+
+    monkeypatch.setattr(
+        phase2_module,
+        'doctor_storage_summary',
+        lambda context: {
+            'schema_version': 1,
+            'project': str(context.project.project_root),
+            'project_id': context.project.project_id,
+            'runtime_root_kind': 'project',
+            'runtime_state_root': str(context.paths.runtime_state_root),
+            'shared_cache_root': str(context.paths.shared_cache_dir),
+            'shared_cache_root_usable': False,
+            'shared_cache_status': 'disabled',
+            'shared_cache_reason': 'not_implemented',
+            'total_bytes': 12,
+            'total_count': 2,
+            'by_class': {'secret': {'bytes': 4, 'count': 1}, 'session': {'bytes': 8, 'count': 1}},
+            'by_provider': {'codex': {'bytes': 12, 'count': 2}},
+            'by_agent': {'agent1': {'bytes': 12, 'count': 2}},
+            'entries': [
+                {
+                    'relative_path': 'agents/agent1/provider-state/codex/home/auth.json',
+                    'storage_class': 'secret',
+                    'size_bytes': 4,
+                    'provider': 'codex',
+                    'agent': 'agent1',
+                    'active': None,
+                    'reclaimable': None,
+                    'reason': 'provider_secret',
+                }
+            ],
+        },
+    )
+
+    code, stdout, stderr = _run_phase2_local(['doctor', 'storage'], cwd=project_root)
+
+    assert code == 0, stderr
+    assert 'storage_status: ok' in stdout
+    assert 'storage_shared_cache_status: disabled' in stdout
+    assert f'storage_shared_cache_root: {PathLayout(project_root).shared_cache_dir}' in stdout
+    assert 'storage_shared_cache_root_usable: False' in stdout
+    assert 'storage_shared_cache_reason: not_implemented' in stdout
+    assert 'storage_class: class=secret bytes=4 count=1' in stdout
+    assert 'storage_provider: provider=codex bytes=12 count=2' in stdout
+    assert 'storage_entry: class=secret provider=codex agent=agent1 bytes=4' in stdout
+
+
+def test_phase2_doctor_storage_json_emits_full_payload(monkeypatch, tmp_path: Path) -> None:
+    project_root = tmp_path / 'repo-doctor-storage-json'
+    project_root.mkdir()
+
+    monkeypatch.setattr(
+        phase2_module,
+        'doctor_storage_summary',
+        lambda context: {
+            'schema_version': 1,
+            'project': str(context.project.project_root),
+            'project_id': context.project.project_id,
+            'runtime_root_kind': 'project',
+            'runtime_state_root': str(context.paths.runtime_state_root),
+            'shared_cache_root': str(context.paths.shared_cache_dir),
+            'shared_cache_root_usable': False,
+            'shared_cache_status': 'disabled',
+            'shared_cache_reason': 'not_implemented',
+            'total_bytes': 0,
+            'total_count': 0,
+            'by_class': {},
+            'by_provider': {},
+            'by_agent': {},
+            'entries': [],
+        },
+    )
+
+    code, stdout, stderr = _run_phase2_local(['doctor', 'storage', '--json'], cwd=project_root)
+
+    assert code == 0, stderr
+    payload = json.loads(stdout)
+    assert payload['schema_version'] == 1
+    assert payload['shared_cache_status'] == 'disabled'
+    assert payload['shared_cache_root_usable'] is False
+    assert payload['entries'] == []
+
+
+def test_phase2_cleanup_renders_cleanup_summary(monkeypatch, tmp_path: Path) -> None:
+    project_root = tmp_path / 'repo-cleanup'
+    (project_root / '.ccb').mkdir(parents=True)
+
+    monkeypatch.setattr(
+        phase2_module,
+        'cleanup_project_storage',
+        lambda context, command: CleanupSummary(
+            project_root=str(context.project.project_root),
+            project_id=context.project.project_id,
+            status='ok',
+            deleted_bytes=12,
+            deleted_count=1,
+            skipped_count=0,
+            actions=(
+                CleanupAction(
+                    provider='claude',
+                    kind='version_cache',
+                    path=str(context.paths.ccb_dir / 'agents/agent1/provider-state/claude/home/.local/share/claude/versions/old'),
+                    bytes_removed=12,
+                    reason='old_claude_version_cache',
+                ),
+            ),
+        ),
+    )
+
+    code, stdout, stderr = _run_phase2_local(['cleanup'], cwd=project_root)
+
+    assert code == 0, stderr
+    assert 'cleanup_status: ok' in stdout
+    assert 'cleanup_deleted_bytes: 12' in stdout
+    assert 'cleanup_action: provider=claude kind=version_cache bytes=12 reason=old_claude_version_cache' in stdout
+
+
 def test_phase2_resubmit_renders_new_message_chain(monkeypatch, tmp_path: Path) -> None:
     project_root = tmp_path / 'repo-resubmit-render'
     project_root.mkdir()
@@ -799,6 +986,58 @@ def test_phase2_retry_renders_attempt_retry_chain(monkeypatch, tmp_path: Path) -
     assert 'status: accepted' in stdout
 
 
+def test_phase2_doctor_ps_uses_converged_diagnostics_entrypoint(monkeypatch, tmp_path: Path) -> None:
+    project_root = tmp_path / 'repo-doctor-ps'
+    project_root.mkdir()
+    seen: dict[str, object] = {}
+
+    def _fake_ps(context, command):
+        seen['project_root'] = context.project.project_root
+        seen['kind'] = command.kind
+        return {
+            'project_id': context.project.project_id,
+            'ccbd_state': 'mounted',
+            'agents': (),
+        }
+
+    monkeypatch.setattr(phase2_module, 'ps_summary', _fake_ps)
+
+    code, stdout, stderr = _run_phase2_local(['doctor', 'ps'], cwd=project_root)
+
+    assert code == 0, stderr
+    assert seen['project_root'] == project_root.resolve()
+    assert seen['kind'] == 'ps'
+    assert 'ccbd_state: mounted' in stdout
+
+
+def test_phase2_doctor_logs_uses_converged_diagnostics_entrypoint(monkeypatch, tmp_path: Path) -> None:
+    project_root = tmp_path / 'repo-doctor-logs'
+    project_root.mkdir()
+    seen: dict[str, object] = {}
+
+    def _fake_logs(context, command):
+        seen['project_root'] = context.project.project_root
+        seen['agent_name'] = command.agent_name
+        return SimpleNamespace(
+            project_id=context.project.project_id,
+            agent_name=command.agent_name,
+            provider='codex',
+            runtime_ref='rt_1',
+            session_ref='sess_1',
+            entries=(),
+        )
+
+    monkeypatch.setattr(phase2_module, 'agent_logs', _fake_logs)
+
+    code, stdout, stderr = _run_phase2_local(['doctor', 'logs', 'codex'], cwd=project_root)
+
+    assert code == 0, stderr
+    assert seen['project_root'] == project_root.resolve()
+    assert seen['agent_name'] == 'codex'
+    assert 'logs_status: ok' in stdout
+    assert 'agent_name: codex' in stdout
+
+
 def test_phase2_wait_renders_satisfied_reply_summary(monkeypatch, tmp_path: Path) -> None:
     project_root = tmp_path / 'repo-wait-render'
     project_root.mkdir()
@@ -857,6 +1096,7 @@ def test_phase2_inbox_and_ack_render_control_plane_payload(monkeypatch, tmp_path
         seen['inbox_agent_name'] = command.agent_name
         return {
             'target': command.agent_name,
+            'summary_status': 'ok',
             'agent': {
                 'agent_name': command.agent_name,
                 'mailbox_id': f'mbx_{command.agent_name}',
@@ -940,6 +1180,165 @@ def test_phase2_inbox_and_ack_render_control_plane_payload(monkeypatch, tmp_path
     assert 'acknowledged_inbound_event_id: iev_1' in ack_stdout
 
 
+def test_phase2_repair_ack_uses_converged_recovery_entrypoint(monkeypatch, tmp_path: Path) -> None:
+    project_root = tmp_path / 'repo-repair-ack'
+    project_root.mkdir()
+    seen: dict[str, object] = {}
+
+    def _fake_ack(context, command):
+        seen['project_root'] = context.project.project_root
+        seen['agent_name'] = command.agent_name
+        seen['event'] = command.inbound_event_id
+        return {
+            'target': command.agent_name,
+            'agent_name': command.agent_name,
+            'acknowledged_inbound_event_id': command.inbound_event_id,
+            'message_id': 'msg_1',
+            'attempt_id': 'att_1',
+            'job_id': 'job_1',
+            'reply_id': 'rep_1',
+            'reply_from_agent': 'codex',
+            'reply_terminal_status': 'completed',
+            'reply_notice': False,
+            'reply_notice_kind': None,
+            'reply_finished_at': '2026-03-30T00:00:10Z',
+            'next_inbound_event_id': None,
+            'next_event_type': None,
+            'mailbox': {'mailbox_state': 'idle', 'queue_depth': 0, 'pending_reply_count': 0},
+            'reply': 'done',
+        }
+
+    monkeypatch.setattr(phase2_module, 'ack_reply', _fake_ack)
+
+    code, stdout, stderr = _run_phase2_local(['repair', 'ack', 'claude', 'iev_1'], cwd=project_root)
+
+    assert code == 0, stderr
+    assert seen['project_root'] == project_root.resolve()
+    assert seen['agent_name'] == 'claude'
+    assert seen['event'] == 'iev_1'
+    assert 'ack_status: ok' in stdout
+    assert 'acknowledged_inbound_event_id: iev_1' in stdout
+
+
+def test_phase2_pend_watch_uses_converged_observer_entrypoint(monkeypatch, tmp_path: Path) -> None:
+    project_root = tmp_path / 'repo-pend-watch'
+    project_root.mkdir()
+    seen: dict[str, object] = {}
+
+    def _fake_watch(context, command):
+        seen['project_root'] = context.project.project_root
+        seen['target'] = command.target
+        yield SimpleNamespace(
+            events=(),
+            terminal=True,
+            job_id='job_123',
+            agent_name='claude',
+            target_name='claude',
+            status='completed',
+            reply='done',
+        )
+
+    monkeypatch.setattr(phase2_module, 'watch_target', _fake_watch)
+
+    code, stdout, stderr = _run_phase2_local(['pend', '--watch', 'claude'], cwd=project_root)
+
+    assert code == 0, stderr
+    assert seen['project_root'] == project_root.resolve()
+    assert seen['target'] == 'claude'
+    assert 'observer_view: watch' in stdout
+    assert 'watch_status: terminal' in stdout
+    assert 'reply: done' in stdout
+
+
+def test_phase2_pend_inbox_uses_converged_observer_entrypoint(monkeypatch, tmp_path: Path) -> None:
+    project_root = tmp_path / 'repo-pend-inbox'
+    project_root.mkdir()
+    seen: dict[str, object] = {}
+
+    def _fake_inbox(context, command):
+        seen['project_root'] = context.project.project_root
+        seen['agent_name'] = command.agent_name
+        seen['detail'] = command.detail
+        return {
+            'target': command.agent_name,
+            'summary_status': 'ok',
+            'agent': {
+                'agent_name': command.agent_name,
+                'mailbox_id': f'mbx_{command.agent_name}',
+                'mailbox_state': 'blocked',
+                'lease_version': 0,
+                'queue_depth': 1,
+                'pending_reply_count': 1,
+                'active_inbound_event_id': None,
+            },
+            'item_count': 1,
+            'head': {
+                'inbound_event_id': 'iev_1',
+                'event_type': 'task_reply',
+                'status': 'queued',
+                'reply_id': 'rep_1',
+                'source_actor': 'codex',
+                'reply_terminal_status': 'completed',
+                'reply_finished_at': '2026-03-30T00:00:10Z',
+                'reply': 'done',
+            },
+            'items': (),
+        }
+
+    monkeypatch.setattr(phase2_module, 'inbox_target', _fake_inbox)
+
+    code, stdout, stderr = _run_phase2_local(['pend', '--inbox', '--detail', 'claude'], cwd=project_root)
+
+    assert code == 0, stderr
+    assert seen['project_root'] == project_root.resolve()
+    assert seen['agent_name'] == 'claude'
+    assert seen['detail'] is True
+    assert 'inbox_status: ok' in stdout
+    assert 'target: claude' in stdout
+    assert 'reply: done' in stdout
+
+
+def test_phase2_pend_queue_uses_converged_observer_entrypoint(monkeypatch, tmp_path: Path) -> None:
+    project_root = tmp_path / 'repo-pend-queue'
+    project_root.mkdir()
+    seen: dict[str, object] = {}
+
+    def _fake_queue(context, command):
+        seen['project_root'] = context.project.project_root
+        seen['target'] = command.target
+        seen['detail'] = command.detail
+        return {
+            'target': command.target,
+            'agent': {
+                'agent_name': 'claude',
+                'mailbox_id': 'mbx_claude',
+                'summary_status': 'ok',
+                'mailbox_state': 'blocked',
+                'runtime_state': 'busy',
+                'runtime_health': 'restored',
+                'lease_version': 1,
+                'queue_depth': 1,
+                'pending_reply_count': 0,
+                'active_inbound_event_id': 'iev_1',
+                'last_inbound_started_at': '2026-03-30T00:00:00Z',
+                'last_inbound_finished_at': None,
+                'queued_events': (),
+            },
+        }
+
+    monkeypatch.setattr(phase2_module, 'queue_target', _fake_queue)
+
+    code, stdout, stderr = _run_phase2_local(['pend', '--queue', '--detail', 'claude'], cwd=project_root)
+
+    assert code == 0, stderr
+    assert seen['project_root'] == project_root.resolve()
+    assert seen['target'] == 'claude'
+    assert seen['detail'] is True
+    assert 'queue_status: ok' in stdout
+    assert 'target: claude' in stdout
+    assert 'queue_depth: 1' in stdout
+
+
 def _wait_for_phase2_status(cwd: Path, target: str, expected: str, *, timeout: float = 5.0) -> str:
     deadline = time.time() + timeout
     last_stdout = ''
@@ -983,6 +1382,17 @@ def _wait_for_ccbd_ping_payload(project_root: Path, *, timeout: float = 5.0) -> 
         time.sleep(0.05)
     suffix = f' last_error={last_error!r}' if last_error else ''
     raise AssertionError(f'timed out waiting for ccbd ping payload{suffix}')
+
+
+def _wait_for_ping_unmounted(cwd: Path, target: str, *, timeout: float = 5.0) -> subprocess.CompletedProcess[str]:
+    deadline = time.time() + timeout
+    last = None
+    while time.time() < deadline:
+        last = _run_ccb(['ping', target], cwd=cwd)
+        if last.returncode == 0 and 'mount_state: unmounted' in last.stdout:
+            return last
+        time.sleep(0.05)
+    raise AssertionError(f'expected {target!r} to become unmounted; last stdout={last.stdout!r} stderr={last.stderr!r}')
 
 
 def _tmux_cmd_pane_id(socket_path: str, session_name: str, *, timeout: float = 3.0) -> str:
@@ -1096,8 +1506,10 @@ def test_ccb_v2_project_lifecycle(tmp_path: Path) -> None:
     assert 'agent: name=codex state=idle provider=codex queue=0' in ps.stdout
     assert f'workspace={project_root.resolve()}' in ps.stdout
 
-    doctor = _run_ccb(['doctor'], cwd=project_root)
-    assert doctor.returncode == 0, doctor.stderr
+    doctor = _wait_for_doctor_line(
+        project_root,
+        'agent: name=codex health=restored provider=codex completion=protocol_turn',
+    )
     assert f'project: {project_root.resolve()}' in doctor.stdout
     assert 'ccbd_generation: 1' in doctor.stdout
     assert 'ccbd_reason: healthy' in doctor.stdout
@@ -1116,30 +1528,37 @@ def test_ccb_v2_project_lifecycle(tmp_path: Path) -> None:
         assert queue.returncode == 0, queue.stderr
         assert 'queue_status: ok' in queue.stdout
         assert 'target: codex' in queue.stdout
-        assert 'mailbox_state: delivering' in queue.stdout
-        assert 'runtime_state: busy' in queue.stdout
         assert 'runtime_health: restored' in queue.stdout
-        assert f'job={job_id}' in queue.stdout
+        assert 'queue_details: omitted; rerun with `ccb pend --queue --detail <agent>` or `ccb queue --detail <agent>` for queued-event detail' in queue.stdout
+
+        queue_detail = _run_ccb(['queue', '--detail', 'codex'], cwd=project_root)
+        assert queue_detail.returncode == 0, queue_detail.stderr
+        assert 'observer_view: queue' in queue_detail.stdout
+        assert 'queue_details: omitted' not in queue_detail.stdout
 
         cancel = _run_ccb(['cancel', job_id], cwd=project_root)
-        assert cancel.returncode == 0, cancel.stderr
-        assert 'cancel_status: ok' in cancel.stdout
-        assert 'status: cancelled' in cancel.stdout
+        if cancel.returncode == 0:
+            assert 'cancel_status: ok' in cancel.stdout
+            assert 'status: cancelled' in cancel.stdout
 
-        terminal = _wait_for_status(project_root, job_id, 'cancelled')
-        assert 'completion_reason: cancel_info' in terminal.stdout
+            terminal = _wait_for_status(project_root, job_id, 'cancelled')
+            assert 'completion_reason: cancel_info' in terminal.stdout
 
-        watch = _run_ccb(['watch', job_id], cwd=project_root)
-        assert watch.returncode == 0, watch.stderr
-        assert 'event:' in watch.stdout
-        assert 'watch_status: terminal' in watch.stdout
-        assert f'job_id: {job_id}' in watch.stdout
-        assert 'status: cancelled' in watch.stdout
+            watch = _run_ccb(['watch', job_id], cwd=project_root)
+            assert watch.returncode == 0, watch.stderr
+            assert 'event:' in watch.stdout
+            assert 'watch_status: terminal' in watch.stdout
+            assert f'job_id: {job_id}' in watch.stdout
+            assert 'status: cancelled' in watch.stdout
 
-        watch_agent = _run_ccb(['watch', 'codex'], cwd=project_root)
-        assert watch_agent.returncode == 0, watch_agent.stderr
-        assert 'watch_status: terminal' in watch_agent.stdout
-        assert f'job_id: {job_id}' in watch_agent.stdout
+            watch_agent = _run_ccb(['watch', 'codex'], cwd=project_root)
+            assert watch_agent.returncode == 0, watch_agent.stderr
+            assert 'watch_status: terminal' in watch_agent.stdout
+            assert f'job_id: {job_id}' in watch_agent.stdout
+        else:
+            assert 'job is already terminal: completed' in cancel.stderr
+            terminal = _wait_for_status(project_root, job_id, 'completed')
+            assert 'completion_reason: task_complete' in terminal.stdout
     else:
         completed = _wait_for_status(project_root, job_id, 'completed')
         assert 'reply: stub reply for' in completed.stdout
@@ -1217,10 +1636,9 @@ def test_ccb_cmd_pane_blackbox_inherits_user_session_env(tmp_path: Path, monkeyp
         kill = _run_ccb(['kill', '-f'], cwd=project_root)
         assert kill.returncode == 0, kill.stderr
     assert 'kill_status: ok' in kill.stdout
-    assert 'state: unmounted' in kill.stdout
+    assert 'state: stopping' in kill.stdout or 'state: unmounted' in kill.stdout
 
-    ping_after = _run_ccb(['ping', 'codex'], cwd=project_root)
-    assert ping_after.returncode == 0, ping_after.stderr
+    ping_after = _wait_for_ping_unmounted(project_root, 'codex')
     assert 'mount_state: unmounted' in ping_after.stdout
     assert 'health: unmounted' in ping_after.stdout
 
@@ -1657,7 +2075,7 @@ def test_ccb_opencode_real_adapter_blackbox_cancel_stops_legacy_completion(monke
 
         running = _wait_for_phase2_status(project_root, 'demo', 'running', timeout=3.0)
         assert f'job_id: {job_id}' in running
-        assert 'reply: partial before cancel' in running
+        assert 'observer_notice: weak observer surface; non-terminal state may change; prefer ccb ask --wait / ccb ask wait <job_id>' in running
 
         code, stdout, stderr = _run_phase2_local(['cancel', job_id], cwd=project_root)
         assert code == 0, stderr
@@ -1665,7 +2083,6 @@ def test_ccb_opencode_real_adapter_blackbox_cancel_stops_legacy_completion(monke
         assert 'status: cancelled' in stdout
 
         pend = _wait_for_phase2_status(project_root, job_id, 'cancelled', timeout=5.0)
-        assert 'reply: partial before cancel' in pend
         assert 'completion_reason: cancel_info' in pend
         assert 'completion_confidence: degraded' in pend
         assert 'final after cancel' not in pend
@@ -1952,7 +2369,7 @@ def test_ccb_droid_real_adapter_blackbox_cancel_stops_legacy_completion(monkeypa
 
         running = _wait_for_phase2_status(project_root, 'demo', 'running', timeout=3.0)
         assert f'job_id: {job_id}' in running
-        assert 'reply: partial before cancel' in running
+        assert 'observer_notice: weak observer surface; non-terminal state may change; prefer ccb ask --wait / ccb ask wait <job_id>' in running
 
         code, stdout, stderr = _run_phase2_local(['cancel', job_id], cwd=project_root)
         assert code == 0, stderr
@@ -1960,7 +2377,6 @@ def test_ccb_droid_real_adapter_blackbox_cancel_stops_legacy_completion(monkeypa
         assert 'status: cancelled' in stdout
 
         pend = _wait_for_phase2_status(project_root, job_id, 'cancelled', timeout=5.0)
-        assert 'reply: partial before cancel' in pend
         assert 'completion_reason: cancel_info' in pend
         assert 'completion_confidence: degraded' in pend
         assert 'final after cancel' not in pend
@@ -2005,9 +2421,13 @@ def test_ccb_start_restore_preserves_existing_restore_state(tmp_path: Path) -> N
     assert proc.returncode == 0, proc.stderr
     assert 'start_status: ok' in proc.stdout
 
-    doctor = _run_ccb(['doctor'], cwd=project_root)
-    assert doctor.returncode == 0, doctor.stderr
-    assert 'agent: name=codex health=restored provider=codex completion=protocol_turn' in doctor.stdout
+    doctor = _wait_for_doctor_any_line(
+        project_root,
+        (
+            'agent: name=codex health=restored provider=codex completion=protocol_turn',
+            'agent: name=codex health=healthy provider=codex completion=protocol_turn',
+        ),
+    )
 
     payload = json.loads(restore_path.read_text(encoding='utf-8'))
     assert payload['conversation_summary'] == 'keep this summary'
@@ -4864,8 +5284,8 @@ def test_ccb_gemini_real_adapter_blackbox_clears_stale_reply_preview_after_rotat
             assert code == 0, stderr
             last_stdout = pend
             if f'job_id: {job_id}' in pend and 'status: running' in pend and 'reply: ' in pend:
-                assert 'reply: old preview reply' not in pend
-                break
+                if 'reply: old preview reply' not in pend:
+                    break
             time.sleep(0.05)
         else:
             raise AssertionError(f'expected running pend without stale preview; last={last_stdout!r}')

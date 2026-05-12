@@ -50,6 +50,7 @@ class AgentRuntime:
     restart_count: int = 0
     last_reconcile_at: str | None = None
     last_failure_reason: str | None = None
+    mount_attempt_id: str | None = None
 
     def __post_init__(self) -> None:
         self.agent_name = normalize_agent_name(self.agent_name)
@@ -99,6 +100,7 @@ class AgentRuntime:
             'restart_count': self.restart_count,
             'last_reconcile_at': self.last_reconcile_at,
             'last_failure_reason': self.last_failure_reason,
+            'mount_attempt_id': self.mount_attempt_id,
         }
 
 

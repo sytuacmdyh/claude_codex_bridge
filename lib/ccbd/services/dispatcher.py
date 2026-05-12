@@ -71,6 +71,7 @@ class JobDispatcher(DispatcherRuntimeStateMixin, DispatcherFacadeMixin):
         message_bureau: MessageBureauFacade | None = None,
         message_bureau_control: MessageBureauControlService | None = None,
         snapshot_writer: SnapshotWriter | None = None,
+        timing_sink=None,
         clock=utc_now,
     ) -> None:
         self._runtime_state = DispatcherRuntimeState(
@@ -97,6 +98,7 @@ class JobDispatcher(DispatcherRuntimeStateMixin, DispatcherFacadeMixin):
             dispatch_rejected_error=DispatchRejectedError,
             terminal_event_by_status=_TERMINAL_EVENT_BY_STATUS,
             running_status=JobStatus.RUNNING,
+            timing_sink=timing_sink,
             last_restore_entries=(),
             last_restore_generated_at=None,
         )
@@ -108,6 +110,9 @@ class JobDispatcher(DispatcherRuntimeStateMixin, DispatcherFacadeMixin):
     def tick(self) -> tuple[JobRecord, ...]:
         prepare_reply_deliveries(self)
         return tick_jobs(self)
+
+    def disable_auto_reply_delivery(self) -> None:
+        self._runtime_state.auto_reply_delivery_on_complete = False
 
     def complete(self, job_id: str, decision: CompletionDecision) -> JobRecord:
         return complete_job(self, job_id, decision)

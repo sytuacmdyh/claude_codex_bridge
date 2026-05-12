@@ -135,12 +135,25 @@ def test_workspace_materializer_creates_real_git_worktree(tmp_path: Path) -> Non
     assert branch == 'ccb/agent1'
 
 
-def test_workspace_materializer_falls_back_to_copy_for_non_git_project(tmp_path: Path) -> None:
+def test_workspace_materializer_rejects_git_worktree_for_non_git_project(tmp_path: Path) -> None:
+    project_root = tmp_path / 'repo'
+    project_root.mkdir()
+    (project_root / 'README.md').write_text('should-not-copy\n', encoding='utf-8')
+    ctx = bootstrap_project(project_root)
+    plan = WorkspacePlanner().plan(_spec(), ctx)
+
+    with pytest.raises(RuntimeError, match='git-worktree workspace requires a git repository'):
+        WorkspaceMaterializer().materialize(plan)
+
+    assert plan.workspace_path.exists() is False
+
+
+def test_workspace_materializer_allows_explicit_copy_for_non_git_project(tmp_path: Path) -> None:
     project_root = tmp_path / 'repo'
     project_root.mkdir()
     (project_root / 'README.md').write_text('copy\n', encoding='utf-8')
     ctx = bootstrap_project(project_root)
-    plan = WorkspacePlanner().plan(_spec(), ctx)
+    plan = WorkspacePlanner().plan(_spec(workspace_mode=WorkspaceMode.COPY), ctx)
 
     result = WorkspaceMaterializer().materialize(plan)
 

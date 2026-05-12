@@ -26,7 +26,15 @@ def build_runtime_launcher() -> ProviderRuntimeLauncher:
     )
 
 
-def build_start_cmd(command: ParsedStartCommand, spec: AgentSpec, runtime_dir, launch_session_id: str) -> str:
+def build_start_cmd(
+    command: ParsedStartCommand,
+    spec: AgentSpec,
+    runtime_dir,
+    launch_session_id: str,
+    *,
+    prepared_state: dict[str, object] | None = None,
+) -> str:
+    del prepared_state
     cmd_parts = provider_start_parts('droid')
     if command.restore:
         cmd_parts.append('-r')

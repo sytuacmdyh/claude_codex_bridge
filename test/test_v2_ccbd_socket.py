@@ -103,6 +103,28 @@ def _wait_for_job_status(client: CcbdClient, job_id: str, expected: str, *, time
     raise AssertionError(f'expected job {job_id} status={expected!r}; last={last!r}')
 
 
+def _wait_for_job_payload(client: CcbdClient, job_id: str, predicate, *, timeout: float = 3.0) -> dict:
+    deadline = time.time() + timeout
+    last = None
+    while time.time() < deadline:
+        last = client.get(job_id)
+        if predicate(last):
+            return last
+        time.sleep(0.05)
+    raise AssertionError(f'expected job {job_id} payload predicate; last={last!r}')
+
+
+def _wait_for_watch_payload(client: CcbdClient, job_id: str, predicate, *, timeout: float = 3.0) -> dict:
+    deadline = time.time() + timeout
+    last = None
+    while time.time() < deadline:
+        last = client.watch(job_id)
+        if predicate(last):
+            return last
+        time.sleep(0.05)
+    raise AssertionError(f'expected watch {job_id} payload predicate; last={last!r}')
+
+
 def _decision(*, status: CompletionStatus = CompletionStatus.COMPLETED, reply: str = 'done') -> CompletionDecision:
     return CompletionDecision(
         terminal=True,
@@ -167,7 +189,7 @@ def test_ccbd_socket_roundtrip_and_shutdown(tmp_path: Path) -> None:
     )
     job_id = submit['job_id']
     app.dispatcher.tick()
-    running = client.get(job_id)
+    running = _wait_for_job_status(client, job_id, 'running')
     assert running['status'] == 'running'
 
     app.dispatcher.complete(
@@ -217,6 +239,56 @@ def test_ccbd_socket_roundtrip_and_shutdown(tmp_path: Path) -> None:
     thread.join(timeout=2)
     assert not thread.is_alive()
     assert app.mount_manager.load_state().mount_state.value == 'unmounted'
+
+
+def test_ccbd_control_plane_metrics_record_queue_wait_and_handler_durations(tmp_path: Path) -> None:
+    project_root = tmp_path / 'repo-metrics'
+    ctx = _prepare_project(project_root, _single_agent_config_text('codex', 'codex'))
+    app = CcbdApp(project_root)
+    app.registry.upsert(
+        _runtime(
+            'codex',
+            project_id=ctx.project_id,
+            workspace_path=str(app.paths.workspace_path('codex')),
+            pid=777,
+        )
+    )
+
+    thread = threading.Thread(target=app.serve_forever, kwargs={'poll_interval': 0.05}, daemon=True)
+    thread.start()
+    _wait_for(app.paths.ccbd_socket_path)
+
+    client = CcbdClient(app.paths.ccbd_socket_path)
+    client.ping('ccbd')
+    submit = client.submit(
+        MessageEnvelope(
+            project_id=ctx.project_id,
+            to_agent='codex',
+            from_actor='user',
+            body='hello',
+            task_id='task-metrics',
+            reply_to=None,
+            message_type='ask',
+            delivery_scope=DeliveryScope.SINGLE,
+        )
+    )
+
+    assert submit['job_id'].startswith('job_')
+    assert app.control_plane_metrics.last_request_queue_wait_s is not None
+    assert app.control_plane_metrics.last_request_queue_wait_s >= 0.0
+    assert app.control_plane_metrics.last_ping_duration_s is not None
+    assert app.control_plane_metrics.last_ping_duration_s >= 0.0
+    assert app.control_plane_metrics.last_submit_duration_s is not None
+    assert app.control_plane_metrics.last_submit_duration_s >= 0.0
+    assert app.control_plane_metrics.pending_maintenance_ticks in (0, 1)
+
+    app.heartbeat()
+    assert app.control_plane_metrics.last_maintenance_duration_s is not None
+    assert app.control_plane_metrics.last_maintenance_duration_s >= 0.0
+
+    client.shutdown()
+    thread.join(timeout=2)
+    assert not thread.is_alive()
 
 
 def test_ccbd_socket_bad_client_does_not_block_later_ping(tmp_path: Path) -> None:
@@ -368,6 +440,10 @@ def test_ccbd_stop_all_does_not_run_post_shutdown_heartbeat(tmp_path: Path) -> N
     assert runtime.desired_state == 'stopped'
     assert runtime.reconcile_state == 'stopped'
     assert runtime.runtime_ref is None
+    lifecycle = app.lifecycle_store.load()
+    assert lifecycle is not None
+    assert lifecycle.desired_state == 'stopped'
+    assert lifecycle.phase == 'unmounted'
 
 
 def test_ccbd_stop_all_force_terminalizes_running_jobs_before_restart_restore(tmp_path: Path) -> None:
@@ -494,6 +570,99 @@ def test_ccbd_socket_rejects_mutating_requests_while_lifecycle_stopping(tmp_path
     client.shutdown()
     thread.join(timeout=2)
     assert not thread.is_alive()
+
+
+def test_ccbd_heartbeat_skips_maintenance_steps_while_lifecycle_stopping(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / 'repo-stopping-heartbeat'
+    ctx = _prepare_project(project_root, _single_agent_config_text('codex', 'codex'))
+    app = CcbdApp(project_root)
+    app.lease = SimpleNamespace(generation=3)
+    app.lifecycle_store.save(
+        build_lifecycle(
+            project_id=ctx.project_id,
+            occurred_at='2026-03-18T00:00:05Z',
+            desired_state='stopped',
+            phase='stopping',
+            generation=3,
+            keeper_pid=app.keeper_pid,
+            owner_pid=app.pid,
+            owner_daemon_instance_id=app.daemon_instance_id,
+            config_signature=str(app.config_identity.get('config_signature') or '').strip() or None,
+            socket_path=app.paths.ccbd_socket_path,
+            shutdown_intent='stop_all',
+        )
+    )
+    monkeypatch.setattr(app.mount_manager, 'refresh_heartbeat', lambda **kwargs: app.lease)
+    monkeypatch.setattr(
+        app.health_monitor,
+        'check_all',
+        lambda: (_ for _ in ()).throw(AssertionError('health monitor should be suspended')),
+    )
+    monkeypatch.setattr(
+        app.runtime_supervision,
+        'reconcile_once',
+        lambda: (_ for _ in ()).throw(AssertionError('supervision should be suspended')),
+    )
+    monkeypatch.setattr(
+        app.dispatcher,
+        'tick',
+        lambda: (_ for _ in ()).throw(AssertionError('dispatcher tick should be suspended')),
+    )
+
+    app.heartbeat()
+
+    lifecycle = app.lifecycle_store.load()
+    assert lifecycle is not None
+    assert lifecycle.phase == 'stopping'
+    assert lifecycle.last_failure_reason is None
+
+
+def test_ccbd_heartbeat_skips_maintenance_while_start_lock_held(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / 'repo-start-heartbeat-lock'
+    ctx = _prepare_project(project_root, _single_agent_config_text('codex', 'codex'))
+    app = CcbdApp(project_root)
+    app.lease = SimpleNamespace(generation=3)
+    app.lifecycle_store.save(
+        build_lifecycle(
+            project_id=ctx.project_id,
+            occurred_at='2026-03-18T00:00:05Z',
+            desired_state='running',
+            phase='mounted',
+            generation=3,
+            keeper_pid=app.keeper_pid,
+            owner_pid=app.pid,
+            owner_daemon_instance_id=app.daemon_instance_id,
+            config_signature=str(app.config_identity.get('config_signature') or '').strip() or None,
+            socket_path=app.paths.ccbd_socket_path,
+        )
+    )
+    monkeypatch.setattr(app.mount_manager, 'refresh_heartbeat', lambda **kwargs: app.lease)
+    monkeypatch.setattr(
+        app.health_monitor,
+        'check_all',
+        lambda: (_ for _ in ()).throw(AssertionError('health monitor should not race start')),
+    )
+    monkeypatch.setattr(
+        app.runtime_supervision,
+        'reconcile_once',
+        lambda: (_ for _ in ()).throw(AssertionError('supervision should not race start')),
+    )
+    monkeypatch.setattr(
+        app.dispatcher,
+        'tick',
+        lambda: (_ for _ in ()).throw(AssertionError('dispatcher tick should not race start')),
+    )
+
+    app.start_maintenance_lock.acquire()
+    try:
+        app.heartbeat()
+    finally:
+        app.start_maintenance_lock.release()
+
+    lifecycle = app.lifecycle_store.load()
+    assert lifecycle is not None
+    assert lifecycle.phase == 'mounted'
+    assert lifecycle.last_failure_reason is None
 
 
 def test_ping_namespace_summary(tmp_path: Path) -> None:
@@ -632,6 +801,85 @@ def test_ccbd_attach_and_restore_roundtrip(tmp_path: Path) -> None:
     assert not thread.is_alive()
 
 
+def test_ccbd_attach_only_runtime_is_not_eagerly_mounted_without_start_policy(tmp_path: Path) -> None:
+    project_root = tmp_path / 'repo-attach-only'
+    _prepare_project(project_root, _single_agent_config_text('demo', 'codex'))
+    app = CcbdApp(project_root)
+
+    thread = threading.Thread(target=app.serve_forever, kwargs={'poll_interval': 0.05}, daemon=True)
+    thread.start()
+    _wait_for(app.paths.ccbd_socket_path)
+
+    client = CcbdClient(app.paths.ccbd_socket_path)
+    attached = client.attach(
+        agent_name='demo',
+        workspace_path=str(app.paths.workspace_path('demo')),
+        backend_type='pane-backed',
+        runtime_ref='tmux:%1',
+        session_ref='demo-session-id',
+    )
+
+    assert attached['binding_source'] == 'external-attach'
+    time.sleep(0.2)
+    runtime = app.registry.get('demo')
+    assert runtime is not None
+    assert runtime.runtime_ref == 'tmux:%1'
+    assert runtime.session_ref == 'demo-session-id'
+    assert runtime.binding_source.value == 'external-attach'
+    assert runtime.health == 'healthy'
+
+    client.shutdown()
+    thread.join(timeout=2)
+    assert not thread.is_alive()
+
+
+def test_ccbd_missing_runtime_is_proactively_mounted_when_start_policy_exists(tmp_path: Path) -> None:
+    project_root = tmp_path / 'repo-policy-mount'
+    _prepare_project(project_root, _single_agent_config_text('demo', 'fake'))
+    app = CcbdApp(project_root)
+    app.persist_start_policy(auto_permission=True)
+
+    mounted: list[str] = []
+
+    def _mount(agent_name: str) -> None:
+        mounted.append(agent_name)
+        app.runtime_service.attach(
+            agent_name=agent_name,
+            workspace_path=str(app.paths.workspace_path(agent_name)),
+            backend_type='pane-backed',
+            runtime_ref='tmux:%42',
+            session_ref='demo-session-id',
+            binding_source='provider-session',
+        )
+
+    app.runtime_supervision._ctx = app.runtime_supervision._ctx.__class__(
+        **{
+            **app.runtime_supervision._ctx.__dict__,
+            'mount_agent_fn': _mount,
+        }
+    )
+
+    thread = threading.Thread(target=app.serve_forever, kwargs={'poll_interval': 0.05}, daemon=True)
+    thread.start()
+    _wait_for(app.paths.ccbd_socket_path)
+
+    deadline = time.time() + 2.0
+    while time.time() < deadline and not mounted:
+        time.sleep(0.05)
+
+    assert mounted == ['demo']
+    runtime = app.registry.get('demo')
+    assert runtime is not None
+    assert runtime.runtime_ref == 'tmux:%42'
+    assert runtime.session_ref == 'demo-session-id'
+    assert runtime.binding_source.value == 'provider-session'
+
+    client = CcbdClient(app.paths.ccbd_socket_path)
+    client.shutdown()
+    thread.join(timeout=2)
+    assert not thread.is_alive()
+
+
 def test_ccbd_queue_reports_registered_agent_mailboxes(tmp_path: Path) -> None:
     project_root = tmp_path / 'repo-queue'
     ctx = _prepare_project(
@@ -674,16 +922,21 @@ def test_ccbd_queue_reports_registered_agent_mailboxes(tmp_path: Path) -> None:
         )
     )
     job_id = submit['job_id']
-    app.dispatcher.tick()
+    _wait_for_job_status(client, job_id, 'running')
 
-    running_queue = client.queue('codex')
+    running_queue = client.queue('codex', detail=True)
     assert running_queue['target'] == 'codex'
     assert running_queue['agent']['mailbox_state'] == 'delivering'
     assert running_queue['agent']['active']['job_id'] == job_id
 
     app.dispatcher.complete(job_id, _decision(reply='done queue'))
 
-    reply_queue = client.queue('claude')
+    reply_queue_summary = client.queue('claude')
+    assert reply_queue_summary['target'] == 'claude'
+    assert reply_queue_summary['agent']['pending_reply_count'] == 1
+    assert 'queued_events' not in reply_queue_summary['agent']
+
+    reply_queue = client.queue('claude', detail=True)
     assert reply_queue['target'] == 'claude'
     assert reply_queue['agent']['pending_reply_count'] == 1
     assert reply_queue['agent']['queued_events'][0]['event_type'] == 'task_reply'
@@ -807,6 +1060,16 @@ def test_ccbd_inbox_and_ack_roundtrip_reply_delivery(tmp_path: Path) -> None:
     assert inbox['target'] == 'claude'
     assert inbox['head']['event_type'] == 'task_reply'
     assert inbox['head']['reply'] == 'socket inbox reply'
+    assert inbox['items'] == []
+
+    inbox_summary = client.inbox('claude', detail=False)
+    assert inbox_summary['target'] == 'claude'
+    assert inbox_summary['head']['event_type'] == 'task_reply'
+    assert inbox_summary['head']['reply'] == 'socket inbox reply'
+    assert inbox_summary['items'] == []
+
+    inbox_detail = client.inbox('claude', detail=True)
+    assert inbox_detail['items']
 
     with pytest.raises(CcbdClientError, match='automatic reply delivery has been scheduled'):
         client.ack('claude')
@@ -816,7 +1079,7 @@ def test_ccbd_inbox_and_ack_roundtrip_reply_delivery(tmp_path: Path) -> None:
     assert not thread.is_alive()
 
 
-def test_ccbd_cmd_sender_routes_reply_into_cmd_mailbox(tmp_path: Path) -> None:
+def test_ccbd_socket_rejects_cmd_sender(tmp_path: Path) -> None:
     project_root = tmp_path / 'repo-inbox-ack-cmd'
     ctx = _prepare_project(
         project_root,
@@ -837,38 +1100,24 @@ def test_ccbd_cmd_sender_routes_reply_into_cmd_mailbox(tmp_path: Path) -> None:
     _wait_for(app.paths.ccbd_socket_path)
 
     client = CcbdClient(app.paths.ccbd_socket_path)
-    submit = client.submit(
-        MessageEnvelope(
-            project_id=ctx.project_id,
-            to_agent='codex',
-            from_actor='cmd',
-            body='hello cmd inbox',
-            task_id='task-inbox-cmd',
-            reply_to=None,
-            message_type='ask',
-            delivery_scope=DeliveryScope.SINGLE,
+    with pytest.raises(CcbdClientError, match='unknown sender agent: cmd'):
+        client.submit(
+            MessageEnvelope(
+                project_id=ctx.project_id,
+                to_agent='codex',
+                from_actor='cmd',
+                body='hello cmd inbox',
+                task_id='task-inbox-cmd',
+                reply_to=None,
+                message_type='ask',
+                delivery_scope=DeliveryScope.SINGLE,
+            )
         )
-    )
-    job_id = submit['job_id']
-    app.dispatcher.tick()
-    app.dispatcher.complete(job_id, _decision(reply='socket cmd reply'))
 
-    completed = client.get(job_id)
-    assert completed['status'] == 'completed'
-    assert completed['reply'] == 'socket cmd reply'
-
-    inbox = client.inbox('cmd')
-    assert inbox['target'] == 'cmd'
-    assert inbox['head']['event_type'] == 'task_reply'
-    assert inbox['head']['reply'] == 'socket cmd reply'
-
-    queue = client.queue('all')
-    assert {item['agent_name'] for item in queue['agents']} == {'claude', 'cmd', 'codex'}
-
-    ack = client.ack('cmd')
-    assert ack['target'] == 'cmd'
-    assert ack['reply'] == 'socket cmd reply'
-    assert ack['acknowledged_inbound_event_id']
+    with pytest.raises(CcbdClientError, match='unknown mailbox target: cmd'):
+        client.inbox('cmd')
+    with pytest.raises(CcbdClientError, match='unknown mailbox target: cmd'):
+        client.ack('cmd')
 
     client.shutdown()
     thread.join(timeout=2)
@@ -983,7 +1232,9 @@ def test_ccbd_retry_creates_new_attempt_under_existing_message(tmp_path: Path) -
     codex_events = InboundEventStore(app.paths).list_agent('codex')
     assert codex_events[-1].attempt_id == payload['attempt_id']
     assert codex_events[-1].event_type is InboundEventType.TASK_REQUEST
-    assert codex_events[-1].status is InboundEventStatus.QUEUED
+    assert codex_events[-1].status in {InboundEventStatus.QUEUED, InboundEventStatus.DELIVERING}
+    if codex_events[-1].status is InboundEventStatus.DELIVERING:
+        assert codex_events[-1].started_at is not None
 
     client.shutdown()
     thread.join(timeout=2)
@@ -1733,8 +1984,7 @@ def test_ccbd_socket_gemini_long_silence_and_session_rotate_do_not_finish_early(
     )
     job_id = submit['job_id']
 
-    time.sleep(0.15)
-    running = client.get(job_id)
+    running = _wait_for_job_status(client, job_id, 'running', timeout=5.0)
     assert running['status'] == 'running'
     assert running['completion_reason'] is None
 
@@ -1852,8 +2102,16 @@ def test_ccbd_socket_gemini_tool_call_progress_does_not_finish_on_first_round(mo
     )
     job_id = submit['job_id']
 
-    time.sleep(0.15)
-    running = client.get(job_id)
+    running = _wait_for_job_payload(
+        client,
+        job_id,
+        lambda payload: (
+            payload['status'] == 'running'
+            and payload.get('reply') == 'I will inspect the manuscript first.'
+            and payload.get('completion_reason') is None
+        ),
+        timeout=5.0,
+    )
     assert running['status'] == 'running'
     assert running['completion_reason'] is None
     assert running['reply'] == 'I will inspect the manuscript first.'
@@ -1961,13 +2219,22 @@ def test_ccbd_socket_gemini_rotate_clears_stale_reply_preview(monkeypatch, tmp_p
     )
     job_id = submit['job_id']
 
-    time.sleep(0.25)
-    running = client.get(job_id)
+    running = _wait_for_job_payload(
+        client,
+        job_id,
+        lambda payload: payload['status'] == 'running' and payload.get('reply') != 'old preview reply',
+        timeout=5.0,
+    )
     assert running['status'] == 'running'
     assert running['reply'] != 'old preview reply'
     assert running['completion_reason'] is None
 
-    watch = client.watch(job_id)
+    watch = _wait_for_watch_payload(
+        client,
+        job_id,
+        lambda payload: len([event for event in payload['events'] if event['type'] == 'completion_item']) >= 4,
+        timeout=5.0,
+    )
     assert watch['terminal'] is False
     completion_items = [event for event in watch['events'] if event['type'] == 'completion_item']
     assert len(completion_items) >= 4

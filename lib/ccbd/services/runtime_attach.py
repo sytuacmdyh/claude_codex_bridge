@@ -30,13 +30,19 @@ def health_for_attach(
         return 'healthy'
     current = normalized_text(existing.health) or 'healthy'
     if binding_source is RuntimeBindingSource.EXTERNAL_ATTACH:
+        has_binding_evidence = bool(
+            normalized_text(existing.runtime_ref)
+            or normalized_text(existing.session_ref)
+        )
+        if current == 'restored' and not has_binding_evidence:
+            return 'restored'
         return 'restored' if current == 'restored' else 'healthy'
     return current
 
 
 def state_for_attach(existing_state: AgentState | None, next_health: str) -> AgentState:
     if next_health in {'healthy', 'restored'}:
-        if existing_state in {AgentState.DEGRADED, AgentState.STOPPED, AgentState.FAILED} or existing_state is None:
+        if existing_state in {AgentState.STARTING, AgentState.DEGRADED, AgentState.STOPPED, AgentState.FAILED} or existing_state is None:
             return AgentState.IDLE
         return existing_state
     return AgentState.DEGRADED

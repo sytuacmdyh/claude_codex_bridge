@@ -27,9 +27,18 @@ def test_mailbox_store_roundtrip(tmp_path: Path) -> None:
         MailboxRecord(
             mailbox_id='mbx-agent1',
             agent_name='Agent1',
+            summary_version=3,
+            summary_source='history-refresh',
+            summary_refreshed_at='2026-03-30T10:01:00Z',
             active_inbound_event_id='evt-1',
             queue_depth=3,
             pending_reply_count=1,
+            head_inbound_event_id='evt-1',
+            head_event_type='task_reply',
+            head_status='queued',
+            head_message_id='msg-1',
+            head_attempt_id='att-1',
+            head_payload_ref='reply:rep-1',
             last_inbound_started_at='2026-03-30T10:00:00Z',
             last_inbound_finished_at='2026-03-30T10:01:00Z',
             mailbox_state=MailboxState.BLOCKED,
@@ -41,6 +50,8 @@ def test_mailbox_store_roundtrip(tmp_path: Path) -> None:
     loaded = store.load('agent1')
     assert loaded is not None
     assert loaded.agent_name == 'agent1'
+    assert loaded.summary_version == 3
+    assert loaded.summary_source == 'history-refresh'
     assert loaded.mailbox_state is MailboxState.BLOCKED
     assert loaded.queue_depth == 3
     assert [record.agent_name for record in store.list_all()] == ['agent1']
@@ -85,6 +96,9 @@ def test_inbound_event_store_supports_queue_history_reads(tmp_path: Path) -> Non
     latest = store.get_latest('agent1', 'evt-2')
     assert latest is not None
     assert latest.status is InboundEventStatus.DELIVERING
+    latest_for_attempt = store.get_latest_for_attempt('agent1', 'att-1')
+    assert latest_for_attempt is not None
+    assert latest_for_attempt.inbound_event_id == 'evt-2'
 
 
 def test_delivery_lease_store_roundtrip_and_remove(tmp_path: Path) -> None:
@@ -113,58 +127,119 @@ def test_delivery_lease_store_roundtrip_and_remove(tmp_path: Path) -> None:
     assert store.load('agent1') is None
 
 
-def test_mailbox_store_supports_cmd_mailbox_owner(tmp_path: Path) -> None:
+def test_mailbox_store_rejects_cmd_mailbox_owner(tmp_path: Path) -> None:
     layout = PathLayout(tmp_path / 'repo')
     mailbox_store = MailboxStore(layout)
     inbound_store = InboundEventStore(layout)
     lease_store = DeliveryLeaseStore(layout)
 
-    mailbox_store.save(
-        MailboxRecord(
-            mailbox_id='mbx-cmd',
-            agent_name='cmd',
-            active_inbound_event_id='evt-cmd',
-            queue_depth=1,
-            pending_reply_count=1,
-            last_inbound_started_at='2026-03-30T10:00:00Z',
-            last_inbound_finished_at=None,
-            mailbox_state=MailboxState.BLOCKED,
-            lease_version=1,
-            updated_at='2026-03-30T10:00:00Z',
+    with pytest.raises(ValueError, match="actor 'cmd' does not own a mailbox"):
+        mailbox_store.save(
+            MailboxRecord(
+                mailbox_id='mbx-cmd',
+                agent_name='cmd',
+                summary_version=1,
+                summary_source='history-refresh',
+                summary_refreshed_at='2026-03-30T10:00:00Z',
+                active_inbound_event_id='evt-cmd',
+                queue_depth=1,
+                pending_reply_count=1,
+                head_inbound_event_id='evt-cmd',
+                head_event_type='task_reply',
+                head_status='queued',
+                head_message_id='msg-cmd',
+                head_attempt_id='att-cmd',
+                head_payload_ref='reply:rep-cmd',
+                last_inbound_started_at='2026-03-30T10:00:00Z',
+                last_inbound_finished_at=None,
+                mailbox_state=MailboxState.BLOCKED,
+                lease_version=1,
+                updated_at='2026-03-30T10:00:00Z',
+            )
         )
-    )
-    loaded_mailbox = mailbox_store.load('cmd')
-    assert loaded_mailbox is not None
-    assert loaded_mailbox.agent_name == 'cmd'
 
-    inbound_store.append(
-        InboundEventRecord(
-            inbound_event_id='evt-cmd',
-            agent_name='cmd',
-            event_type=InboundEventType.TASK_REPLY,
-            message_id='msg-cmd',
-            attempt_id='att-cmd',
-            payload_ref='reply:rep-cmd',
-            priority=10,
-            status=InboundEventStatus.QUEUED,
-            created_at='2026-03-30T10:00:00Z',
+    with pytest.raises(ValueError, match="actor 'cmd' does not own a mailbox"):
+        inbound_store.append(
+            InboundEventRecord(
+                inbound_event_id='evt-cmd',
+                agent_name='cmd',
+                event_type=InboundEventType.TASK_REPLY,
+                message_id='msg-cmd',
+                attempt_id='att-cmd',
+                payload_ref='reply:rep-cmd',
+                priority=10,
+                status=InboundEventStatus.QUEUED,
+                created_at='2026-03-30T10:00:00Z',
+            )
         )
-    )
-    loaded_event = inbound_store.get_latest('cmd', 'evt-cmd')
-    assert loaded_event is not None
-    assert loaded_event.agent_name == 'cmd'
 
-    lease_store.save(
-        DeliveryLease(
-            agent_name='cmd',
-            inbound_event_id='evt-cmd',
-            lease_version=1,
-            acquired_at='2026-03-30T10:00:00Z',
-            last_progress_at='2026-03-30T10:00:01Z',
-            expires_at=None,
-            lease_state=LeaseState.ACQUIRED,
+    with pytest.raises(ValueError, match="actor 'cmd' does not own a mailbox"):
+        lease_store.save(
+            DeliveryLease(
+                agent_name='cmd',
+                inbound_event_id='evt-cmd',
+                lease_version=1,
+                acquired_at='2026-03-30T10:00:00Z',
+                last_progress_at='2026-03-30T10:00:01Z',
+                expires_at=None,
+                lease_state=LeaseState.ACQUIRED,
+            )
         )
+
+
+def test_mailbox_store_compare_and_save_rejects_stale_summary_version(tmp_path: Path) -> None:
+    layout = PathLayout(tmp_path / 'repo')
+    store = MailboxStore(layout)
+
+    initial = MailboxRecord(
+        mailbox_id='mbx-agent1',
+        agent_name='agent1',
+        summary_version=2,
+        summary_source='transition-claim',
+        summary_refreshed_at='2026-03-30T10:01:00Z',
+        active_inbound_event_id='evt-1',
+        queue_depth=1,
+        pending_reply_count=0,
+        head_inbound_event_id='evt-1',
+        head_event_type='task_request',
+        head_status='delivering',
+        head_message_id='msg-1',
+        head_attempt_id='att-1',
+        head_payload_ref='job:job-1',
+        last_inbound_started_at='2026-03-30T10:01:00Z',
+        last_inbound_finished_at=None,
+        mailbox_state=MailboxState.DELIVERING,
+        lease_version=3,
+        updated_at='2026-03-30T10:01:00Z',
     )
-    loaded_lease = lease_store.load('cmd')
-    assert loaded_lease is not None
-    assert loaded_lease.agent_name == 'cmd'
+    store.save(initial)
+
+    stale = MailboxRecord(
+        mailbox_id='mbx-agent1',
+        agent_name='agent1',
+        summary_version=1,
+        summary_source='history-refresh',
+        summary_refreshed_at='2026-03-30T10:00:00Z',
+        active_inbound_event_id=None,
+        queue_depth=0,
+        pending_reply_count=0,
+        head_inbound_event_id=None,
+        head_event_type=None,
+        head_status=None,
+        head_message_id=None,
+        head_attempt_id=None,
+        head_payload_ref=None,
+        last_inbound_started_at=None,
+        last_inbound_finished_at=None,
+        mailbox_state=MailboxState.IDLE,
+        lease_version=0,
+        updated_at='2026-03-30T10:00:00Z',
+    )
+
+    applied = store.compare_and_save(stale, expected_summary_version=1)
+
+    assert applied is False
+    loaded = store.load('agent1')
+    assert loaded is not None
+    assert loaded.summary_version == 2
+    assert loaded.summary_source == 'transition-claim'

@@ -241,41 +241,35 @@
 
 ### ISSUE-006
 
-- 状态：`fixed-retested`
-- 标题：`ask 本地调用默认 sender 改为 cmd 后，reply mailbox 链路在模型/存储层仍把 cmd 当作保留 agent，导致回信不回到 inbox`
+- 状态：`obsolete-contract`
+- 标题：`旧设计曾尝试把 cmd 当作正常 caller mailbox owner，但该合同已废弃`
 - 根因分类：`mailbox-dispatch`
-- 测试场景：`在非 workspace agent 上下文执行 ask，sender 默认回落到 cmd，任务完成后预期 reply 进入 cmd mailbox`
+- 测试场景：`旧方案曾允许在非 workspace agent 上下文执行 ask 时，sender 默认回落到 cmd，并期待 reply 进入 cmd mailbox`
 - 最小复现：
   - 提交 `from_actor=cmd` 的 ask
   - provider 完成回复
   - 读取 `queue cmd` / `inbox cmd` / `ack cmd`
 - 预期结果：
-  - `cmd` 应作为一等 mailbox target 持久化
-  - reply 事件应进入 `cmd` mailbox
-  - `queue/inbox/ack` 应完整可用
+  - 当前合同下，`cmd` 不应作为 mailbox target 持久化
+  - `ask` 默认 sender 应回落到 `user` 或真实 workspace agent
+  - `queue/inbox/ack cmd` 应视为无效目标
 - 实际结果：
-  - facade/control 层已经把 `cmd` 识别为 mailbox target
-  - 但 `MessageRecord`、`SubmissionRecord`、mailbox kernel models、mailbox path/lease path 仍调用 `normalize_agent_name()`
-  - `cmd` 在这些层被保留字校验拒绝，导致 reply 链路中断
+  - 旧实现一度在部分 facade/control 路径上把 `cmd` 识别为 mailbox target
+  - 这与更高层“cmd 不是正常 caller agent”的产品定位冲突，并放大 LLM 误判
 - 根因：
-  - 系统把“真实 agent 名”与“mailbox owner/actor”两种身份混用
-  - 顶层路由层引入了 `cmd` mailbox 语义，但底层模型和路径层没有同步升级为 mailbox-owner 归一化
+  - 系统曾把“前台 pane 名称”和“正常 caller mailbox owner”两种身份混用
 - 系统性修复方案：
-  - 新增统一 actor/mailbox-owner 归一化 helper
-  - `cmd` 仅在 mailbox-owner 语义下合法，不进入真实 agent authority
-  - `MessageEnvelope` / `SubmissionRecord` / `MessageRecord` 统一走 actor 归一化
-  - mailbox kernel models、service、store path、lease path 统一走 mailbox-owner 归一化
-  - 保留 `email/manual/system/user` 为 actor，但不映射为 mailbox
+  - `cmd` 仅保留为布局/前台 pane 名称
+  - `cmd` 不再参与 sender 默认回落，也不再拥有 mailbox
+  - reply mailbox 仅面向真实 agent mailbox owner
 - 回归测试：
-  - `test_dispatcher_routes_cmd_reply_into_command_mailbox`
-  - `test_dispatcher_queue_summary_includes_cmd_mailbox_when_reply_pending`
-  - `test_ccbd_inbox_and_ack_roundtrip_for_cmd_mailbox`
-  - `test_mailbox_store_allows_command_mailbox_owner`
-  - `test_mailbox_kernel_supports_command_mailbox_ack_flow`
+  - `test_dispatcher_rejects_cmd_sender`
+  - `test_dispatcher_queue_summary_ignores_stale_cmd_mailbox_residue`
+  - `test_ccbd_socket_rejects_cmd_sender`
+  - `test_mailbox_store_rejects_cmd_mailbox_owner`
+  - `test_mailbox_kernel_ack_reply_rejects_cmd_mailbox_owner`
 - 复测结论：
-  - 自动化复测确认：`message_bureau`、`ccbd socket`、`ask_cli`、`ccbd dispatcher` 相关链路全部通过
-  - `cmd` reply 现在会进入 `inbox cmd`，并可经 `ack cmd` 正常消费
-  - stop/kill 后的状态收口
+  - 自动化复测应确认：`message_bureau`、`ccbd socket`、`ask_cli`、`ccbd dispatcher` 均不再将 `cmd` 视为正常 caller mailbox
 - 初步判断：
   - supervision 行为和 authority 记录没有建模在一起
 - 根因：
@@ -778,6 +772,79 @@
   - 待补：keeper 接管后重复执行 `ccb` 不会留下旧代 authority
 - 复测结论：
   - 待补
+
+### ISSUE-017
+
+- 状态：`fixed-retested`
+- 标题：`Codex session rebound 后 completion reader 仍盯旧日志，导致真实 ask 已回复但 job 不 terminal`
+- 根因分类：`provider-facts`
+- 测试场景：`Linux soak 中 kill/restart 后继续对 Codex agent 执行 ask wait`
+- 最小复现：
+  - 执行 `CCB_LINUX_SOAK_SECONDS=90 CCB_LINUX_SOAK_KILL_EVERY=2 CCB_LINUX_SOAK_STUB_DELAY=0.2 CCB_LINUX_SOAK_ASK_WAIT_TIMEOUT_S=90 bash test/system_linux_soak.sh`
+  - 在 kill/restart 后提交 Codex ask
+  - provider stub 已在新 Codex session log 中写入 reply
+  - execution polling 仍使用旧 session reader，`ask wait` 超时
+- 预期结果：
+  - restart/rebind 后 polling 应跟随当前 agent session binding
+  - 新 session log 中出现 `CCB_REQ_ID`、assistant chunk、turn boundary 后，job 应进入 terminal
+- 实际结果：
+  - 回复已存在于新 Codex session log
+  - dispatcher polling 没有切到新 log，导致 completion 丢失
+- 影响范围：
+  - Codex managed provider restart/rebind
+  - kill/restart soak 后的 ask completion
+  - daemon recovery 后 session file 被更新但 active submission reader 未更新的路径
+- 根因：
+  - `CodexProviderAdapter.poll()` 只使用 start 时构建的 reader
+  - active submission runtime state 没有保存 workspace path，poll 时无法重新读取当前 session binding
+  - session rebound 后旧 reader 的 preferred log 与当前 session log 不一致
+- 系统性修复方案：
+  - active / resume submission runtime state 保存 `workspace_path`
+  - Codex poll 前读取当前 agent session binding
+  - 若当前 session log 或 session id 与 reader/poll state 不一致，重建 reader 并从新 log 开始扫描
+  - 不扫描全局 Codex home，不突破 managed session authority
+- 回归测试：
+  - `test_execution_service_codex_adapter_follows_rebound_session_binding`
+  - focused codex adapter / tracker / socket suites
+- 复测结论：
+  - 2026-05-09 复测通过
+  - `pytest -q test/test_v2_execution_service.py -k "codex_adapter"`：`10 passed`
+  - `pytest -q test/test_v2_execution_service.py test/test_v2_completion_tracker.py -k "codex or protocol_turn or tracker"`：`15 passed`
+  - 90 秒 Linux soak 与 5 分钟 Linux soak 均通过
+
+### ISSUE-018
+
+- 状态：`fixed-retested`
+- 标题：`Linux soak / fastpath stress 脚本把健康输出或深队列任务误判为失败`
+- 根因分类：`read-path`
+- 测试场景：`真实 Linux soak 与 fastpath stress 使用 bash pipefail、grep -q 和固定 ask wait timeout`
+- 最小复现：
+  - 5 分钟 Linux soak 中 `doctor-20.out` 同时包含 `ccbd_state: mounted` 与 `ccbd_health: healthy`
+  - 但脚本仍报 `doctor health` 失败
+  - fastpath stress 中 60 个 ask 分摊到 3 个串行 provider，尾部 gamma job 未在固定 180 秒窗口内完成，脚本报 `ask wait` 失败
+- 预期结果：
+  - shell harness 不应因 `grep -q` 提前退出触发 `printf` SIGPIPE 而误判健康输出
+  - fastpath stress 的 submit receipt 验证与深队列 terminal convergence 验证应使用不同预算
+- 实际结果：
+  - `set -o pipefail` 下 `printf '%s\n' "$out" | grep -q ...` 可能在大输出上因为 SIGPIPE 返回失败
+  - 固定 `CCB_ASK_WAIT_TIMEOUT_S=180` 小于 60 ask 深队列尾部 job 的真实串行收敛时间
+- 影响范围：
+  - Linux soak / stress 自动验收可信度
+  - 对真实产品行为的误归因
+- 根因：
+  - 测试脚本把 shell 管道行为当成稳定观测原语
+  - fastpath stress 同时验证 fast receipt 与 eventual convergence，但只配置了一个固定等待预算
+- 系统性修复方案：
+  - soak / stress 脚本统一使用 here-string `grep` helper，避免 `pipefail + grep -q` SIGPIPE 假失败
+  - fastpath stress 默认根据 ask 数量、provider 数量和 stub delay 计算深队列 `ask wait` 预算
+  - submit p95 仍使用独立毫秒阈值，避免把等待预算放大误当成 fastpath 放宽
+- 回归测试：
+  - `bash -n test/system_linux_soak.sh test/system_fastpath_stress.sh`
+  - `bash test/system_fastpath_stress.sh`
+- 复测结论：
+  - 2026-05-09 复测通过
+  - 5 分钟 Linux soak：23 轮、7 次 kill/restart，全部通过
+  - fastpath stress：60 ask，submit p95 `227ms`，首/中/尾 `ask wait`、doctor、kill、unmounted 全部通过
 
 ## 6. 关闭标准
 

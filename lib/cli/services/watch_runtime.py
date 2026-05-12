@@ -48,7 +48,7 @@ def watch_target(
     cursor = 0
     deadline = time_fn() + timeout_seconds_fn()
     try:
-        handle = connect_mounted_daemon_fn(context, allow_restart_stale=True)
+        handle = connect_mounted_daemon_fn(context, allow_restart_stale=False)
     except reconnect_error_classes:
         fallback = _persisted_terminal_batch(context, command.target, cursor=cursor)
         if fallback is not None:
@@ -142,7 +142,7 @@ def _connect_handle(
         if deadline is not None and _deadline_exceeded(deadline, time_fn=time_fn):
             return None
         try:
-            handle = connect_mounted_daemon_fn(context, allow_restart_stale=True)
+            handle = connect_mounted_daemon_fn(context, allow_restart_stale=False)
         except reconnect_error_classes:
             fallback = _persisted_terminal_batch(context, target, cursor=cursor)
             if fallback is not None:

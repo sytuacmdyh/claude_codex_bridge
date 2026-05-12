@@ -20,6 +20,7 @@ from .launcher_runtime import (
     claude_history_state as _claude_history_state_impl,
     claude_user_base_url as _claude_user_base_url_impl,
     local_tcp_listener_available as _local_tcp_listener_available_impl,
+    prepare_launch_context as _prepare_launch_context_impl,
     prepare_claude_home_overrides as _prepare_claude_home_overrides_impl,
     prepare_runtime as _prepare_runtime_impl,
     project_session_restore_target as _project_session_restore_target_impl,
@@ -35,6 +36,7 @@ from .session import load_project_session
 def build_runtime_launcher():
     return _build_runtime_launcher_impl(
         prepare_runtime_fn=prepare_runtime,
+        prepare_launch_context_fn=prepare_launch_context,
         build_start_cmd_fn=build_start_cmd,
         build_session_payload_fn=build_session_payload,
         resolve_run_cwd_fn=resolve_run_cwd,
@@ -45,14 +47,43 @@ def prepare_runtime(runtime_dir: Path) -> dict[str, object]:
     return _prepare_runtime_impl(runtime_dir)
 
 
-def build_start_cmd(command: ParsedStartCommand, spec: AgentSpec, runtime_dir: Path, launch_session_id: str) -> str:
+def prepare_launch_context(
+    context: CliContext,
+    spec: AgentSpec,
+    plan: WorkspacePlan,
+    runtime_dir: Path,
+    prepared_state: dict[str, object],
+) -> dict[str, object]:
+    return _prepare_launch_context_impl(context, spec, plan, runtime_dir, prepared_state)
+
+
+def build_start_cmd(
+    command: ParsedStartCommand,
+    spec: AgentSpec,
+    runtime_dir: Path,
+    launch_session_id: str,
+    *,
+    prepared_state: dict[str, object] | None = None,
+) -> str:
+    project_root = _path_or_none((prepared_state or {}).get('project_root'))
+    if project_root is None:
+        raise RuntimeError('Claude launch requires prepare_launch_context before build_start_cmd')
+    agent_events_path = _path_or_none((prepared_state or {}).get('agent_events_path'))
     return _build_start_cmd_impl(
         command,
         spec,
         runtime_dir,
         launch_session_id,
         load_profile_fn=load_resolved_provider_profile,
-        prepare_home_overrides_fn=_prepare_claude_home_overrides_impl,
+        prepare_home_overrides_fn=lambda runtime, profile, **kwargs: _prepare_claude_home_overrides_impl(
+            runtime,
+            profile,
+            refresh_home=False,
+            project_root=project_root,
+            memory_projection_event_path=agent_events_path,
+            memory_projection_marker_path=Path(runtime) / 'claude-memory-projection.json',
+            **kwargs,
+        ),
         write_settings_overlay_fn=write_claude_settings_overlay,
         build_env_prefix_fn=build_claude_env_prefix,
         resolve_restore_target_fn=_resolve_claude_restore_target,
@@ -60,12 +91,22 @@ def build_start_cmd(command: ParsedStartCommand, spec: AgentSpec, runtime_dir: P
     )
 
 
+def _path_or_none(value: object) -> Path | None:
+    raw = str(value or '').strip()
+    if not raw:
+        return None
+    try:
+        return Path(raw).expanduser()
+    except Exception:
+        return None
+
+
 def resolve_run_cwd(
     command: ParsedStartCommand,
     spec: AgentSpec,
     plan: WorkspacePlan,
     runtime_dir: Path,
-    launch_session_id: str,
+    launch_session_id: str | None,
 ) -> Path | str | None:
     return _resolve_run_cwd_impl(
         command,

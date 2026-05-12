@@ -15,6 +15,7 @@ from storage.paths import PathLayout
 from .control_queue import ack_reply as control_ack_reply
 from .control_queue import agent_queue as control_agent_queue
 from .control_queue import inbox as control_inbox
+from .control_queue import mailbox_head as control_mailbox_head
 from .control_queue import queue_summary as control_queue_summary
 from .control_trace import trace as control_trace
 from .service_state import MessageBureauControlRuntimeState, MessageBureauControlStateMixin
@@ -67,8 +68,8 @@ class MessageBureauControlService(MessageBureauControlStateMixin):
             ),
         )
 
-    def queue_summary(self, target: str = 'all') -> dict[str, object]:
-        return control_queue_summary(self, target)
+    def queue_summary(self, target: str = 'all', *, detail: bool | None = None) -> dict[str, object]:
+        return control_queue_summary(self, target, detail=detail)
 
     def agent_queue(self, agent_name: str) -> dict[str, object]:
         return control_agent_queue(self, agent_name)
@@ -76,8 +77,11 @@ class MessageBureauControlService(MessageBureauControlStateMixin):
     def trace(self, target: str) -> dict[str, object]:
         return control_trace(self, target)
 
-    def inbox(self, agent_name: str) -> dict[str, object]:
-        return control_inbox(self, agent_name)
+    def inbox(self, agent_name: str, *, detail: bool | None = None) -> dict[str, object]:
+        return control_inbox(self, agent_name, detail=detail)
+
+    def mailbox_head(self, agent_name: str) -> dict[str, object]:
+        return control_mailbox_head(self, agent_name)
 
     def ack_reply(self, agent_name: str, inbound_event_id: str | None = None) -> dict[str, object]:
         return control_ack_reply(self, agent_name, inbound_event_id=inbound_event_id)

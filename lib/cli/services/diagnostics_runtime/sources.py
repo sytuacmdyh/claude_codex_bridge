@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 _TAIL_SUFFIXES = {'.log', '.jsonl', '.txt', '.yaml', '.yml'}
@@ -14,9 +15,22 @@ _PROVIDER_STATE_SECRET_FILENAMES = {
     'oauth_creds.json',
 }
 _PROVIDER_STATE_SECRET_DIRNAMES = {'.codeisland'}
+_EXCLUDED_PROVIDER_STORAGE_CLASSES = {'secret', 'rebuildable_cache', 'startup_authority_bundle'}
+_PROVIDER_STATE_HARD_EXCLUDED_SEGMENTS = (
+    ('.tmp', 'plugins'),
+    ('.local', 'share', 'claude', 'versions'),
+    ('.npm', '_cacache'),
+    ('.cache', 'node-gyp'),
+    ('.cache', 'vscode-ripgrep'),
+)
 
 
-def project_root_sources(context) -> tuple[tuple[str, Path], ...]:
+def project_root_sources(
+    context,
+    *,
+    storage_payload: dict[str, object] | None = None,
+) -> tuple[tuple[str, Path], ...]:
+    storage_records = _storage_records_by_path(storage_payload)
     items: list[tuple[str, Path]] = [
         ('project-config', context.paths.config_path),
         ('ccbd-authority', context.paths.ccbd_lifecycle_path),
@@ -61,7 +75,13 @@ def project_root_sources(context) -> tuple[tuple[str, Path], ...]:
     items.extend(iter_dir_files('ccbd-health', context.paths.ccbd_provider_health_dir, suffixes={'.jsonl'}))
     items.extend(iter_dir_files('ccbd-mailbox', context.paths.ccbd_mailboxes_dir, suffixes={'.json', '.jsonl'}))
     items.extend(iter_dir_files('ccbd-lease', context.paths.ccbd_leases_dir, suffixes={'.json'}))
-    items.extend(_agent_source_items(context, seen_sources={path for _, path in items}))
+    items.extend(
+        _agent_source_items(
+            context,
+            seen_sources={path for _, path in items},
+            storage_records=storage_records,
+        )
+    )
     return tuple(items)
 
 
@@ -76,12 +96,22 @@ def iter_dir_files(category: str, root: Path, *, suffixes: set[str]) -> list[tup
     return files
 
 
-def iter_provider_state_files(category: str, root: Path) -> list[tuple[str, Path]]:
+def iter_provider_state_files(
+    category: str,
+    root: Path,
+    *,
+    storage_records: dict[str, dict[str, object]] | None = None,
+) -> list[tuple[str, Path]]:
     if not root.exists() or not root.is_dir():
         return []
     files: list[tuple[str, Path]] = []
-    for path in sorted(root.rglob('*')):
-        if not path.is_file() or path.suffix.lower() not in _PROVIDER_STATE_SUFFIXES:
+    for path in _walk_provider_state_files(root):
+        if path.suffix.lower() not in _PROVIDER_STATE_SUFFIXES:
+            continue
+        if _provider_state_path_hard_excluded(path, root=root):
+            continue
+        storage_class = _storage_class_for_path(path, storage_records)
+        if storage_class in _EXCLUDED_PROVIDER_STORAGE_CLASSES:
             continue
         if any(part.lower() in _PROVIDER_STATE_SECRET_DIRNAMES for part in path.parts):
             continue
@@ -89,6 +119,41 @@ def iter_provider_state_files(category: str, root: Path) -> list[tuple[str, Path
             continue
         files.append((category, path))
     return files
+
+
+def _walk_provider_state_files(root: Path):
+    for current, dirnames, filenames in os.walk(root, followlinks=False):
+        current_path = Path(current)
+        safe_dirs: list[str] = []
+        for dirname in sorted(dirnames):
+            candidate = current_path / dirname
+            if candidate.is_symlink() or _provider_state_path_hard_excluded(candidate, root=root):
+                continue
+            safe_dirs.append(dirname)
+        dirnames[:] = safe_dirs
+        for filename in sorted(filenames):
+            candidate = current_path / filename
+            if candidate.is_symlink():
+                continue
+            if candidate.is_file():
+                yield candidate
+
+
+def _provider_state_path_hard_excluded(path: Path, *, root: Path) -> bool:
+    try:
+        parts = tuple(part.lower() for part in path.relative_to(root).parts)
+    except Exception:
+        parts = tuple(part.lower() for part in path.parts)
+    if len(parts) >= 2 and parts[-2:] == ('.tmp', 'plugins.sha'):
+        return True
+    return any(_parts_contain(parts, segment) for segment in _PROVIDER_STATE_HARD_EXCLUDED_SEGMENTS)
+
+
+def _parts_contain(parts: tuple[str, ...], segment: tuple[str, ...]) -> bool:
+    if not segment or len(parts) < len(segment):
+        return False
+    limit = len(parts) - len(segment) + 1
+    return any(parts[index : index + len(segment)] == segment for index in range(limit))
 
 
 def iter_agent_dirs(context) -> tuple[Path, ...]:
@@ -131,11 +196,16 @@ def archive_path_for_source(context, source: Path) -> str:
         return str(Path('external') / suffix)
 
 
-def _agent_source_items(context, *, seen_sources: set[Path]) -> list[tuple[str, Path]]:
+def _agent_source_items(
+    context,
+    *,
+    seen_sources: set[Path],
+    storage_records: dict[str, dict[str, object]],
+) -> list[tuple[str, Path]]:
     items: list[tuple[str, Path]] = []
     for agent_dir in iter_agent_dirs(context):
         agent_name = agent_dir.name
-        for category, path in _agent_sources(context, agent_name, agent_dir):
+        for category, path in _agent_sources(context, agent_name, agent_dir, storage_records=storage_records):
             resolved = _resolve_source(path)
             if resolved in seen_sources:
                 continue
@@ -151,7 +221,13 @@ def _resolve_source(path: Path) -> Path:
         return path.absolute()
 
 
-def _agent_sources(context, agent_name: str, agent_dir: Path) -> tuple[tuple[str, Path], ...]:
+def _agent_sources(
+    context,
+    agent_name: str,
+    agent_dir: Path,
+    *,
+    storage_records: dict[str, dict[str, object]],
+) -> tuple[tuple[str, Path], ...]:
     items: list[tuple[str, Path]] = [
         ('agent-authority', context.paths.agent_spec_path(agent_name)),
         ('agent-authority', context.paths.agent_runtime_path(agent_name)),
@@ -161,8 +237,20 @@ def _agent_sources(context, agent_name: str, agent_dir: Path) -> tuple[tuple[str
         ('agent-workspace', context.paths.workspace_binding_path(agent_name)),
     ]
     items.extend(iter_dir_files('agent-log', context.paths.agent_logs_dir(agent_name), suffixes=_TAIL_SUFFIXES))
-    items.extend(iter_dir_files('agent-runtime', agent_dir / 'provider-runtime', suffixes=_TAIL_SUFFIXES | _COPY_SUFFIXES))
-    items.extend(iter_provider_state_files('agent-provider-state', agent_dir / 'provider-state'))
+    items.extend(
+        iter_dir_files(
+            'agent-runtime',
+            agent_dir / 'provider-runtime',
+            suffixes=_TAIL_SUFFIXES | _COPY_SUFFIXES,
+        )
+    )
+    items.extend(
+        iter_provider_state_files(
+            'agent-provider-state',
+            agent_dir / 'provider-state',
+            storage_records=storage_records,
+        )
+    )
 
     runtime_path = context.paths.agent_runtime_path(agent_name)
     if runtime_path.exists():
@@ -170,6 +258,33 @@ def _agent_sources(context, agent_name: str, agent_dir: Path) -> tuple[tuple[str
         if session_path is not None:
             items.append(('agent-session', session_path))
     return tuple(items)
+
+
+def _storage_records_by_path(storage_payload: dict[str, object] | None) -> dict[str, dict[str, object]]:
+    records: dict[str, dict[str, object]] = {}
+    if not isinstance(storage_payload, dict):
+        return records
+    for raw_entry in storage_payload.get('entries') or ():
+        if not isinstance(raw_entry, dict):
+            continue
+        raw_path = raw_entry.get('path')
+        if not raw_path:
+            continue
+        try:
+            path = _resolve_source(Path(str(raw_path)))
+        except Exception:
+            continue
+        records[str(path)] = raw_entry
+    return records
+
+
+def _storage_class_for_path(path: Path, storage_records: dict[str, dict[str, object]] | None) -> str | None:
+    if not storage_records:
+        return None
+    record = storage_records.get(str(_resolve_source(path)))
+    if not record:
+        return None
+    return str(record.get('storage_class') or '').strip().lower() or None
 
 
 __all__ = ['archive_path_for_source', 'iter_dir_files', 'project_root_sources', 'session_path_from_runtime']

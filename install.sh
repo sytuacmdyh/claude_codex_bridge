@@ -143,7 +143,7 @@ SCRIPTS_TO_LINK=(
 )
 
 CLAUDE_MARKDOWN=(
-  # Old CCB commands removed - replaced by unified ask/ping/pend skills
+  # Old CCB command markdown removed; ask is the only installed CCB skill.
 )
 
 LEGACY_SCRIPTS=(
@@ -212,9 +212,6 @@ Optional environment variables:
                            auto = enabled for macOS release installs, disabled for source/dev installs
   CCB_INSTALL_WATCHDOG     Auto-install optional watchdog dependency (default: 1; set 0 to skip)
   CCB_CONFIRM_MAJOR_UPGRADE Set to 1 to confirm replacing a pre-v6 install with v6+
-  CCB_CLAUDE_MD_MODE       CLAUDE.md injection mode: "inline" (default) or "route"
-                           inline = full config in CLAUDE.md (~57 lines)
-                           route  = minimal pointer in CLAUDE.md, full config in ~/.claude/rules/ccb-config.md
 USAGE
 }
 
@@ -1386,8 +1383,8 @@ install_claude_skills() {
 
   mkdir -p "$skills_dst"
 
-  # Clean up obsolete wrapper/provider skills
-  local obsolete_skills="bask bpend bping cask cpend cping dask dpend dping gask gpend gping hask hpend hping lask lpend lping mounted oask opend oping qask qpend qping auto"
+  # Clean up obsolete wrapper/provider skills and CCB skills no longer installed by default.
+  local obsolete_skills="bask bpend bping cask cpend cping dask dpend dping gask gpend gping hask hpend hping lask lpend lping mounted oask opend oping qask qpend qping auto ping pend autonew all-plan docs tp tr file-op review continue"
   for obs_skill in $obsolete_skills; do
     if [[ -d "$skills_dst/$obs_skill" ]]; then
       rm -rf "$skills_dst/$obs_skill"
@@ -1395,12 +1392,12 @@ install_claude_skills() {
     fi
   done
 
-  echo "Installing Claude skills (bash SKILL.md templates)..."
+  echo "Installing Claude ask skill (bash SKILL.md template)..."
   for skill_dir in "$skills_src"/*/; do
     [[ -d "$skill_dir" ]] || continue
     local skill_name
     skill_name=$(basename "$skill_dir")
-    [[ "$skill_name" == "docs" ]] && continue
+    [[ "$skill_name" == "ask" ]] || continue
 
     if [[ ! -f "$skill_dir/SKILL.md.bash" && ! -f "$skill_dir/SKILL.md" ]]; then
       continue
@@ -1411,12 +1408,6 @@ install_claude_skills() {
 
     echo "  Updated skill: $skill_name"
   done
-
-  # Shared docs live at skills/docs but are not a "skill directory". Install them as well.
-  if [[ -d "$skills_src/docs" ]]; then
-    install_owned_directory "$skills_src/docs" "$skills_dst/docs"
-    echo "  Installed skills docs: docs/"
-  fi
 
   echo "Updated Claude skills directory: $skills_dst"
 }
@@ -1433,8 +1424,8 @@ install_codex_skills() {
 
   mkdir -p "$skills_dst"
 
-  # Clean up obsolete wrapper/provider skills
-  local obsolete_skills="bask bpend bping cask cpend cping dask dpend dping gask gpend gping hask hpend hping lask lpend lping mounted oask opend oping qask qpend qping"
+  # Clean up obsolete wrapper/provider skills and CCB skills no longer installed by default.
+  local obsolete_skills="bask bpend bping cask cpend cping dask dpend dping gask gpend gping hask hpend hping lask lpend lping mounted oask opend oping qask qpend qping ping pend autonew all-plan file-op"
   for obs_skill in $obsolete_skills; do
     if [[ -d "$skills_dst/$obs_skill" ]]; then
       rm -rf "$skills_dst/$obs_skill"
@@ -1442,11 +1433,12 @@ install_codex_skills() {
     fi
   done
 
-  echo "Installing Codex skills (bash SKILL.md templates)..."
+  echo "Installing Codex ask skill (bash SKILL.md template)..."
   for skill_dir in "$skills_src"/*/; do
     [[ -d "$skill_dir" ]] || continue
     local skill_name
     skill_name=$(basename "$skill_dir")
+    [[ "$skill_name" == "ask" ]] || continue
 
     if [[ ! -f "$skill_dir/SKILL.md.bash" && ! -f "$skill_dir/SKILL.md" ]]; then
       continue
@@ -1476,8 +1468,8 @@ install_droid_skills() {
 
   mkdir -p "$skills_dst"
 
-  # Clean up obsolete wrapper/provider skills
-  local obsolete_skills="bask bpend bping cask cpend cping dask dpend dping gask gpend gping hask hpend hping lask lpend lping mounted oask opend oping qask qpend qping"
+  # Clean up obsolete wrapper/provider skills and CCB skills no longer installed by default.
+  local obsolete_skills="bask bpend bping cask cpend cping dask dpend dping gask gpend gping hask hpend hping lask lpend lping mounted oask opend oping qask qpend qping ping pend autonew all-plan"
   for obs_skill in $obsolete_skills; do
     if [[ -d "$skills_dst/$obs_skill" ]]; then
       rm -rf "$skills_dst/$obs_skill"
@@ -1485,11 +1477,12 @@ install_droid_skills() {
     fi
   done
 
-  echo "Installing Droid/Factory skills..."
+  echo "Installing Droid/Factory ask skill..."
   for skill_dir in "$skills_src"/*/; do
     [[ -d "$skill_dir" ]] || continue
     local skill_name
     skill_name=$(basename "$skill_dir")
+    [[ "$skill_name" == "ask" ]] || continue
 
     if [[ ! -f "$skill_dir/SKILL.md" ]]; then
       continue
@@ -1802,6 +1795,48 @@ with open(sys.argv[1], 'w', encoding='utf-8') as f:
   fi
 
   echo "Updated .clinerules: $clinerules"
+}
+
+cleanup_marked_memory_file() {
+  local file_path="$1"
+  local start_marker="$2"
+  local end_marker="$3"
+  local label="$4"
+
+  if [[ ! -f "$file_path" ]]; then
+    return 0
+  fi
+  if ! grep -q "$start_marker" "$file_path" 2>/dev/null; then
+    return 0
+  fi
+  if ! pick_python_bin; then
+    echo "WARN: python required to clean $label; skipping"
+    return 1
+  fi
+
+  "$PYTHON_BIN" - "$file_path" "$start_marker" "$end_marker" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+path = Path(sys.argv[1])
+start = re.escape(sys.argv[2])
+end = re.escape(sys.argv[3])
+content = path.read_text(encoding="utf-8")
+content = re.sub(rf"\n?{start}.*?{end}\n?", "\n", content, flags=re.DOTALL)
+path.write_text(content.strip() + "\n", encoding="utf-8")
+PY
+  echo "Removed CCB memory block from $label"
+}
+
+cleanup_memory_injections() {
+  uninstall_claude_md_config
+  if install_uses_live_source; then
+    return 0
+  fi
+  cleanup_marked_memory_file "$INSTALL_PREFIX/AGENTS.md" "$CCB_ROLES_START_MARKER" "$CCB_ROLES_END_MARKER" "AGENTS.md" || true
+  cleanup_marked_memory_file "$INSTALL_PREFIX/AGENTS.md" "$CCB_RUBRICS_START_MARKER" "$CCB_RUBRICS_END_MARKER" "AGENTS.md" || true
+  cleanup_marked_memory_file "$INSTALL_PREFIX/.clinerules" "$CCB_ROLES_START_MARKER" "$CCB_ROLES_END_MARKER" ".clinerules" || true
 }
 
 install_settings_permissions() {
@@ -2171,9 +2206,7 @@ install_all() {
   install_codex_skills
   install_droid_skills
   install_droid_delegation
-  install_claude_md_config
-  install_agents_md_config
-  install_clinerules_config
+  cleanup_memory_injections
   install_settings_permissions
   install_tmux_config
   echo "OK: Installation complete"
@@ -2186,18 +2219,7 @@ install_all() {
   fi
   print_install_identity_summary
   echo "   Claude commands updated"
-  local md_mode="${CCB_CLAUDE_MD_MODE:-inline}"
-  if [[ "$md_mode" == "route" ]]; then
-    echo "   Global CLAUDE.md configured with CCB route pointer (full config in ~/.claude/rules/ccb-config.md)"
-  else
-    echo "   Global CLAUDE.md configured with CCB collaboration rules (inline)"
-  fi
-  if install_uses_live_source; then
-    echo "   Repo AGENTS.md/.clinerules left untouched (source dev mode)"
-  else
-    echo "   AGENTS.md configured with review rubrics"
-    echo "   .clinerules configured with role assignments"
-  fi
+  echo "   Global memory files left unmodified; old CCB memory blocks cleaned when present"
   if use_managed_venv; then
     echo "   Managed Python: $(managed_venv_python)"
   fi

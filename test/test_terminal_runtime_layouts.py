@@ -69,7 +69,21 @@ def test_create_tmux_auto_layout_allocates_detached_session_when_outside_tmux() 
     assert result.created_panes == ["%root-detached"]
     assert result.needs_attach is True
     assert backend.tmux_calls == [
-        (["new-session", "-d", "-s", "ccb-demo-1", "-c", "/tmp/demo"], True, False),
+        (
+            [
+                "new-session",
+                "-d",
+                "-s",
+                "ccb-demo-1",
+                "-c",
+                "/tmp/demo",
+                "sh",
+                "-lc",
+                "while :; do sleep 3600; done",
+            ],
+            True,
+            False,
+        ),
         (["list-panes", "-t", "ccb-demo-1", "-F", "#{pane_id}"], True, True),
     ]
 

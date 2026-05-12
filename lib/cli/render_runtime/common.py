@@ -5,6 +5,7 @@ import re
 
 
 _PROTOCOL_LINE_RE = re.compile(r'^\s*CCB_(?:REQ_ID|BEGIN|DONE):.*$', re.MULTILINE)
+_TERMINAL_OBSERVER_STATUSES = frozenset({'completed', 'cancelled', 'failed', 'incomplete'})
 
 
 def display_text(value: object) -> str:
@@ -18,6 +19,33 @@ def display_text(value: object) -> str:
 
 def render_mapping(payload: Mapping[str, object]) -> tuple[str, ...]:
     return tuple(f'{key}: {value}' for key, value in payload.items())
+
+
+def render_observer_notice(
+    *,
+    view: str,
+    terminal: bool,
+    authority: str = 'supplementary_snapshot',
+) -> tuple[str, ...]:
+    lines = [
+        f'observer_view: {view}',
+        f'observer_authority: {authority}',
+        f'observer_terminal: {str(bool(terminal)).lower()}',
+    ]
+    if terminal:
+        lines.append(
+            'observer_notice: weak observer surface; terminal snapshot shown; use ccb trace <id> for authoritative lineage'
+        )
+    else:
+        lines.append(
+            'observer_notice: weak observer surface; non-terminal state may change; prefer ccb ask --wait / ccb ask wait <job_id>'
+        )
+    return tuple(lines)
+
+
+def observer_status_is_terminal(status: object) -> bool:
+    normalized = str(status or '').strip().lower()
+    return normalized in _TERMINAL_OBSERVER_STATUSES
 
 
 def render_tmux_cleanup_summaries(items: Sequence[object]) -> tuple[str, ...]:
@@ -95,6 +123,8 @@ def write_lines(out, lines: Iterable[str]) -> None:
 
 __all__ = [
     'display_text',
+    'observer_status_is_terminal',
+    'render_observer_notice',
     'render_mapping',
     'render_tmux_cleanup_summaries',
     'render_worktree_alerts',

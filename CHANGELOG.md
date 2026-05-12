@@ -2,6 +2,59 @@
 
 ## Unreleased
 
+## v6.1.7 (2026-05-12)
+
+### Codex Memory Freshness Hotfix
+
+- **Codex Shared Memory Refresh Fixed**: Codex startup now records the managed `AGENTS.md` memory projection fingerprint and skips stale `resume` bindings when `.ccb/ccb_memory.md` changes
+- **Ask Skill Submit Discipline Tightened**: Claude and Droid ask skills now require heredoc submission and stop immediately after submit, avoiding accidental polling or waiting
+
+## v6.1.6 (2026-05-11)
+
+### Startup And Claude Auth Hotfix
+
+- **Start/Maintenance Race Fixed**: ccbd now prevents heartbeat maintenance from mutating project tmux panes while a start request is laying out and launching agents
+- **Project Memory Anchor Tightened**: CCB no longer creates, imports, or depends on project-root `CCB.md`; `.ccb/ccb_memory.md` is the only shared CCB memory anchor
+- **Claude macOS Login Inheritance Fixed**: managed Claude startup now checks the current `Claude Code-credentials` Keychain service before older service names
+
+## v6.1.5 (2026-05-11)
+
+### Tmux Startup Hotfix
+
+- **Pane Startup Race Fixed**: project layout panes are now created with a silent placeholder in the initial tmux split, preventing fast-exiting shells from causing `Cannot split: pane ... does not exist` or `respawn pane failed: can't find pane`
+- **Provider Launch Semantics Preserved**: agent panes still use the managed respawn path, preserving provider shell, stderr log, and `remain-on-exit` behavior
+- **Tmux Regression Coverage Added**: tests now cover real tmux layout creation with an exiting `default-command` plus guardrails that keep provider commands off the structural split path
+
+## v6.1.4 (2026-05-11)
+
+### Project Shared Memory V1
+
+- **Shared Project Memory Landed**: `.ccb/ccb_memory.md` is now the shared project memory anchor injected into managed Claude, Codex, Gemini, and OpenCode agents during startup
+- **Per-Agent Memory Layer Added**: `.ccb/agents/<agent>/memory.md` now participates as an agent-private overlay on top of the shared project file
+- **Provider Startup Contract Unified**: memory projection now runs through a single writer path with explicit launch context, stable workspace resolution, and fail-fast launch behavior across providers
+- **Gemini Managed Memory Smoke Validated**: Gemini CLI 0.41.2 was real-smoke validated against managed `.gemini/GEMINI.md` loading via `GEMINI_CLI_HOME`
+
+## v6.1.2 (2026-05-11)
+
+### Provider Storage Boundary Hardening
+
+- **Storage Audit Expanded**: `ccb doctor storage` now reports explicit storage classes for provider authority, sessions, secrets, workspaces, user content, projected config, rebuildable cache, and startup authority bundles
+- **Safe Cleanup Added**: `ccb cleanup` now holds the project lifecycle lock, refuses active `ccbd` or pending ask jobs, prunes old Claude version caches conservatively, and removes only safe Gemini rebuildable caches
+- **Diagnostics Bundle Hardened**: support bundles now include storage summaries while excluding provider secrets, Claude binary caches, Gemini rebuildable caches, and Codex startup bundles even when classification fails
+- **Provider Runtime Boundaries Tightened**: non-Codex profile runtime-home overrides are rejected, Codex legacy profile homes migrate into managed provider state safely, and duplicate effective provider homes fail validation
+- **Shared Cache Foundation Added**: future provider shared-cache roots now resolve through `PathLayout`, reject unsafe WSL drvfs placement without relocation, and create a versioned `MANIFEST.json`
+
+## v6.1.0 (2026-05-09)
+
+### CCBD Ask Stability And Observer Convergence
+
+- **Ask Submit Fastpath Stabilized**: `ccb ask` now returns bounded receipts without waiting on provider readiness, mailbox history projection, or long maintenance ticks; real Linux fastpath stress validated 60 queued asks with p95 submit latency under 250ms
+- **Lifecycle And Shutdown Races Closed**: stop-all, shutdown, and background supervision now respect lifecycle stopping state so stopped runtimes and terminal jobs are not revived by stale maintenance or recovery work
+- **Provider Completion Recovery Hardened**: Codex polling now follows rebound session bindings after restart, so replies written to a new managed session log can still terminalize the original job
+- **Mailbox Summary Read Model Landed**: queue, inbox, pend, and related observer views now prefer maintained mailbox summaries and explicitly degrade on missing/corrupt summaries instead of silently scanning full history on routine paths
+- **Observer Surfaces Weakened**: `pend`, `watch`, `queue`, and `inbox` are documented and rendered as non-authoritative snapshots, reducing confusion between weak mailbox observations and `ask wait` / tracker terminal authority
+- **Real Platform Validation Added**: new GitHub Actions coverage runs macOS and WSL ccbd/ask smoke tests, communication matrix, short soak, and fastpath stress with stub providers; Linux local validation covered full pytest, comm matrix, soak, and fastpath stress
+
 ## v6.0.29 (2026-05-07)
 
 ### WSL Runtime State Relocation
@@ -9,6 +62,8 @@
 - **Runtime State Moved Off Mounted Drives**: on WSL projects rooted under `/mnt/<drive>/...`, project authority remains in `.ccb` while `ccbd/` and agent runtime state relocate to a local Linux state root with explicit marker files
 - **Diagnostics and Bundle Mapping Updated**: doctor output and support bundles now expose the project anchor, runtime-state root, relocation reason, and logical `.ccb` archive paths for relocated runtime files
 - **Provider Lookup and Ask Routing Kept Stable**: relocated runtime directories still resolve back to the project anchor for session discovery and ask sender attribution without changing Linux or macOS default layout behavior
+- **Runtime Markers Are Validated**: relocated runtime markers and refs now reject malformed or mismatched payloads, so stale relocation residue cannot silently remap one project to another
+- **WSL Smoke Matches the Final Contract**: the release smoke now expects the runtime-root relocation path that the relocated project actually writes, instead of treating the first relocation step as the final socket fallback
 
 ## v6.0.28 (2026-05-07)
 

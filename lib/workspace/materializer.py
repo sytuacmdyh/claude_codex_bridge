@@ -43,7 +43,10 @@ class WorkspaceMaterializer:
         if plan.branch_name is None:
             raise ValueError('git-worktree workspace requires branch_name')
         if not can_use_git_worktree(plan.project_root):
-            return self._materialize_copy(plan)
+            raise RuntimeError(
+                'git-worktree workspace requires a git repository: '
+                f'{plan.project_root}; use workspace_mode="copy" for an explicit directory copy'
+            )
 
         if self._is_existing_git_workspace(plan.workspace_path):
             self._validate_existing_git_workspace(plan)

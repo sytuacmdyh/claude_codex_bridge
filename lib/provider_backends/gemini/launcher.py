@@ -25,10 +25,26 @@ from provider_profiles import load_resolved_provider_profile
 
 def build_runtime_launcher():
     return _build_runtime_launcher_impl(
+        prepare_launch_context_fn=prepare_launch_context,
         build_start_cmd_fn=build_start_cmd,
         build_session_payload_fn=build_session_payload,
         resolve_run_cwd_fn=resolve_run_cwd,
     )
+
+
+def prepare_launch_context(
+    context: CliContext,
+    spec: AgentSpec,
+    plan: WorkspacePlan,
+    runtime_dir: Path,
+    prepared_state: dict[str, object],
+) -> dict[str, object]:
+    del runtime_dir
+    payload = dict(prepared_state)
+    payload['project_root'] = str(context.project.project_root)
+    payload['workspace_path'] = str(prepared_state.get('run_cwd') or plan.workspace_path)
+    payload['agent_events_path'] = str(context.paths.agent_events_path(spec.name))
+    return payload
 
 
 def build_start_cmd(
@@ -36,12 +52,16 @@ def build_start_cmd(
     spec: AgentSpec,
     runtime_dir,
     launch_session_id: str,
+    *,
+    prepared_state: dict[str, object] | None = None,
 ) -> str:
+    launch_context = prepared_state or {}
     return _build_start_cmd_impl(
         command,
         spec,
         runtime_dir,
         launch_session_id,
+        prepared_state=launch_context,
         resolve_restore_target_fn=_resolve_gemini_restore_target,
         prepare_home_overrides_fn=_prepare_gemini_home_overrides_impl,
     )
@@ -52,7 +72,7 @@ def resolve_run_cwd(
     spec: AgentSpec,
     plan: WorkspacePlan,
     runtime_dir: Path,
-    launch_session_id: str,
+    launch_session_id: str | None,
 ) -> Path | str | None:
     return _resolve_run_cwd_impl(
         command,

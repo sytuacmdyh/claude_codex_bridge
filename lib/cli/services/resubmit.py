@@ -20,7 +20,7 @@ class ResubmitSummary:
 def resubmit_message(context: CliContext, command: ParsedResubmitCommand) -> ResubmitSummary:
     payload = invoke_mounted_daemon(
         context,
-        allow_restart_stale=True,
+        allow_restart_stale=False,
         request_fn=lambda client: client.resubmit(command.message_id),
     )
     return ResubmitSummary(

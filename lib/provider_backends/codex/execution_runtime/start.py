@@ -70,6 +70,7 @@ def start_active_submission(
             'last_assistant_message': '',
             'last_assistant_signature': '',
             'session_path': state_session_path(state),
+            'workspace_path': str(prepared.work_dir),
             'no_wrap': no_wrap,
         },
     )
@@ -111,6 +112,7 @@ def resume_submission(
             'pane_id': str(pane_or_err),
             'mode': 'active',
             'session_path': state.get('session_path') or (str(preferred_log) if preferred_log else ''),
+            'workspace_path': str(work_dir),
         },
     )
 

@@ -12,7 +12,7 @@ from .facade_recording_common import (
     reply_status_for_job,
 )
 from .facade_recording_terminal_attempts import record_attempt_terminal
-from .facade_state import refresh_mailbox, refresh_message_state
+from .facade_state import rebuild_mailbox_summary, refresh_message_state
 from .models import ReplyRecord, ReplyTerminalStatus
 
 
@@ -148,7 +148,12 @@ def queue_reply_delivery(
             created_at=finished_at,
         )
     )
-    refresh_mailbox(service, caller_mailbox, updated_at=finished_at)
+    service._mailbox_kernel.apply_incremental_summary_update(
+        caller_mailbox,
+        queue_delta=1,
+        pending_reply_delta=1,
+        updated_at=finished_at,
+    )
 
 
 __all__ = [

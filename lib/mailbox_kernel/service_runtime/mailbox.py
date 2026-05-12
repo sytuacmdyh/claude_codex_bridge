@@ -3,66 +3,67 @@ from __future__ import annotations
 from mailbox_runtime.targets import normalize_mailbox_owner_name
 
 from .queries import latest_events, pending_events
+from .summary import build_mailbox_summary_record, save_summary_record
 
 
-def refresh_mailbox(service, agent_name: str, *, updated_at: str | None = None):
+def project_mailbox_summary(
+    service,
+    agent_name: str,
+    *,
+    updated_at: str | None = None,
+    prior=Ellipsis,
+    summary_source: str = 'history-refresh',
+):
     normalized = normalize_mailbox_owner_name(agent_name)
     timestamp = updated_at or service._clock()
-    prior = service._mailbox_store.load(normalized)
+    if prior is Ellipsis:
+        prior = service._mailbox_store.load(normalized)
     lease = service._lease_store.load(normalized)
     events = pending_events(service, normalized)
     queue_depth = len(events)
     pending_reply_count = sum(1 for event in events if event.event_type is service._reply_event_type)
-    mailbox_state, active_inbound_event_id, lease_version = _mailbox_facts(
-        service,
-        prior=prior,
-        lease=lease,
-        queue_depth=queue_depth,
-    )
     last_started, last_finished = _latest_activity(
         service,
         normalized,
         prior=prior,
     )
-
-    record = service._mailbox_record_cls(
-        mailbox_id=prior.mailbox_id if prior is not None else f'mbx_{normalized}',
-        agent_name=normalized,
-        active_inbound_event_id=active_inbound_event_id,
+    return build_mailbox_summary_record(
+        service,
+        normalized,
+        prior=prior,
+        lease=lease,
         queue_depth=queue_depth,
         pending_reply_count=pending_reply_count,
-        last_inbound_started_at=last_started,
-        last_inbound_finished_at=last_finished,
-        mailbox_state=mailbox_state,
-        lease_version=lease_version,
+        active_inbound_event_id=_active_inbound_event_id(service, lease=lease),
+        last_started_at=last_started,
+        last_finished_at=last_finished,
         updated_at=timestamp,
-    )
-    service._mailbox_store.save(record)
-    return record
-
-
-def _mailbox_facts(service, *, prior, lease, queue_depth: int):
-    if lease is not None and lease.lease_state is service._lease_state_acquired:
-        return (
-            service._mailbox_state_delivering,
-            lease.inbound_event_id,
-            lease.lease_version,
-        )
-    if queue_depth > 0:
-        return (
-            service._mailbox_state_blocked,
-            None,
-            _prior_lease_version(prior),
-        )
-    return (
-        service._mailbox_state_idle,
-        None,
-        _prior_lease_version(prior),
+        summary_source=summary_source,
     )
 
 
-def _prior_lease_version(prior) -> int:
-    return prior.lease_version if prior is not None else 0
+def rebuild_mailbox_summary(service, agent_name: str, *, updated_at: str | None = None):
+    normalized = normalize_mailbox_owner_name(agent_name)
+    prior = service._mailbox_store.load(normalized)
+    expected_summary_version = None if prior is None else int(prior.summary_version)
+    record = project_mailbox_summary(
+        service,
+        normalized,
+        updated_at=updated_at,
+        prior=prior,
+        summary_source='history-refresh',
+    )
+    return save_summary_record(
+        service,
+        record,
+        expected_summary_version=expected_summary_version,
+    )
+
+
+def _active_inbound_event_id(service, *, lease):
+    if lease is None or lease.lease_state is not service._lease_state_acquired:
+        return None
+    return lease.inbound_event_id or None
 
 
 def _latest_activity(service, normalized: str, *, prior):
@@ -80,4 +81,4 @@ def _latest_timestamp(current: str | None, candidate: str | None) -> str | None:
     return current
 
 
-__all__ = ['refresh_mailbox']
+__all__ = ['project_mailbox_summary', 'rebuild_mailbox_summary']

@@ -27,7 +27,7 @@ def watch_ask_job(
     deadline = _watch_deadline(timeout, timeout_seconds_fn=timeout_seconds_fn, monotonic_fn=monotonic_fn)
     poll_interval = poll_interval_seconds_fn()
     try:
-        handle = connect_mounted_daemon_fn(context, allow_restart_stale=True)
+        handle = connect_mounted_daemon_fn(context, allow_restart_stale=False)
     except reconnect_error_classes:
         fallback = _persisted_terminal_batch(context, job_id, cursor=cursor)
         if fallback is not None:
@@ -136,7 +136,7 @@ def _connect_client(
         if _deadline_exceeded(deadline, monotonic_fn=monotonic_fn):
             return None
         try:
-            handle = connect_mounted_daemon_fn(context, allow_restart_stale=True)
+            handle = connect_mounted_daemon_fn(context, allow_restart_stale=False)
         except reconnect_error_classes:
             fallback = _persisted_terminal_batch(context, job_id, cursor=cursor)
             if fallback is not None:

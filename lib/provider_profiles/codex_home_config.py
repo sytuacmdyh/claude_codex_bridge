@@ -5,10 +5,20 @@ import importlib
 import json
 import os
 from dataclasses import dataclass
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timezone
 from pathlib import Path
 import re
 import shutil
+
+from provider_core.source_home import current_provider_source_home
+from project_memory import (
+    ensure_project_memory,
+    load_memory_sources,
+    read_memory_source,
+    render_memory_bundle,
+)
+from project_memory.hashing import sha256_text
+from storage.atomic import atomic_write_text
 
 
 _CODEX_CUSTOM_PROVIDER_ID = 'custom'
@@ -35,6 +45,11 @@ def materialize_codex_home_config(
     *,
     profile=None,
     source_home: Path | None = None,
+    project_root: Path | None = None,
+    agent_name: str | None = None,
+    workspace_path: Path | None = None,
+    memory_projection_event_path: Path | None = None,
+    memory_projection_marker_path: Path | None = None,
 ) -> Path:
     target_home = Path(target_home).expanduser()
     source_home = Path(source_home).expanduser() if source_home is not None else _system_codex_home()
@@ -64,6 +79,20 @@ def materialize_codex_home_config(
     _sync_tree(source_home / 'skills', target_home / 'skills', enabled=_inherits_skills(profile))
     _sync_tree(source_home / 'commands', target_home / 'commands', enabled=_inherits_commands(profile))
     _sync_codex_plugin_projection(source_home, target_home)
+    memory_result = _materialize_codex_memory(
+        source_home,
+        target_home,
+        profile=profile,
+        project_root=project_root,
+        agent_name=agent_name,
+        workspace_path=workspace_path,
+    )
+    _record_memory_projection_event(
+        memory_result,
+        event_path=memory_projection_event_path,
+        marker_path=memory_projection_marker_path,
+        agent_name=agent_name,
+    )
     return target_config
 
 
@@ -112,6 +141,10 @@ def _inherits_skills(profile) -> bool:
 
 def _inherits_commands(profile) -> bool:
     return True if profile is None else bool(getattr(profile, 'inherit_commands', True))
+
+
+def _inherits_memory(profile) -> bool:
+    return True if profile is None else bool(getattr(profile, 'inherit_memory', True))
 
 
 def _profile_env(profile) -> dict[str, str]:
@@ -302,6 +335,204 @@ def _sync_codex_plugin_projection(source_home: Path, target_home: Path) -> None:
         target_sha.unlink(missing_ok=True)
 
 
+def _materialize_codex_memory(
+    source_home: Path,
+    target_home: Path,
+    *,
+    profile,
+    project_root: Path | None,
+    agent_name: str | None,
+    workspace_path: Path | None,
+) -> dict[str, object]:
+    normalized_source_home = Path(source_home).expanduser()
+    normalized_target_home = Path(target_home).expanduser()
+    target = normalized_target_home / 'AGENTS.md'
+    if _same_path(normalized_source_home, normalized_target_home):
+        return _memory_projection_result(
+            status='skipped',
+            reason='source_home_is_target_home',
+            path=target,
+        )
+    if not _inherits_memory(profile):
+        _remove_path(target)
+        return _memory_projection_result(
+            status='skipped',
+            reason='inherit_memory_disabled',
+            path=target,
+        )
+    if project_root is None or agent_name is None:
+        return _memory_projection_result(
+            status='failed',
+            reason='missing_project_context',
+            path=target,
+        )
+    root = Path(project_root).expanduser()
+    try:
+        warnings: list[str] = []
+        ensure_result = ensure_project_memory(root)
+        if ensure_result.warning:
+            warnings.append(ensure_result.warning)
+        extra_sources = tuple(
+            source
+            for source in (
+                read_memory_source(
+                    kind='provider_user_memory',
+                    title='Provider User Memory',
+                    path=source_home / 'AGENTS.md',
+                    include_missing=False,
+                ),
+            )
+            if source is not None
+        )
+        sources = load_memory_sources(
+            root,
+            agent_name=agent_name,
+            provider='codex',
+            extra_sources=extra_sources,
+        )
+        warnings.extend(source.warning for source in sources if source.warning)
+        rendered = render_memory_bundle(
+            project_root=root,
+            agent_name=agent_name,
+            provider='codex',
+            sources=sources,
+            workspace_path=workspace_path,
+        )
+        digest = sha256_text(rendered)
+        if _text_file_sha256(target) == digest:
+            return _memory_projection_result(
+                status='skipped',
+                reason='unchanged',
+                path=target,
+                sha256=digest,
+                source_count=len(sources),
+                warnings=warnings,
+            )
+        atomic_write_text(target, rendered)
+        return _memory_projection_result(
+            status='ok',
+            reason='written',
+            path=target,
+            sha256=digest,
+            source_count=len(sources),
+            warnings=warnings,
+        )
+    except Exception as exc:
+        return _memory_projection_result(
+            status='failed',
+            reason=type(exc).__name__,
+            path=target,
+            error_detail=str(exc),
+        )
+
+
+def _memory_projection_result(
+    *,
+    status: str,
+    reason: str,
+    path: Path,
+    sha256: str = '',
+    source_count: int = 0,
+    warnings: list[str] | tuple[str, ...] = (),
+    error_detail: str = '',
+) -> dict[str, object]:
+    return {
+        'status': status,
+        'reason': reason,
+        'path': str(path),
+        'sha256': sha256,
+        'source_count': source_count,
+        'warnings': tuple(str(item) for item in warnings if str(item)),
+        'error_detail': str(error_detail or ''),
+    }
+
+
+def _record_memory_projection_event(
+    result: dict[str, object],
+    *,
+    event_path: Path | None,
+    marker_path: Path | None,
+    agent_name: str | None,
+) -> None:
+    if event_path is None or marker_path is None or not agent_name:
+        return
+    status = str(result.get('status') or 'unknown')
+    reason = str(result.get('reason') or '')
+    signature = {
+        'status': status,
+        'reason': reason,
+        'path': str(result.get('path') or ''),
+        'sha256': str(result.get('sha256') or ''),
+        'warnings': list(result.get('warnings') or ()),
+    }
+    marker = Path(marker_path)
+    if _same_memory_projection_signature(marker, signature):
+        return
+    event = {
+        'record_type': 'agent_event',
+        'event_type': f'codex_memory_projection_{status}',
+        'provider': 'codex',
+        'agent_name': agent_name,
+        'status': status,
+        'reason': reason,
+        'projection_path': signature['path'],
+        'sha256': signature['sha256'],
+        'source_count': int(result.get('source_count') or 0),
+        'warnings': signature['warnings'],
+        'error_detail': str(result.get('error_detail') or ''),
+        'created_at': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
+    }
+    try:
+        target = Path(event_path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open('a', encoding='utf-8') as handle:
+            handle.write(json.dumps(event, ensure_ascii=False) + '\n')
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(json.dumps(signature, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+    except OSError:
+        return
+
+
+def _same_memory_projection_signature(path: Path, payload: dict[str, object]) -> bool:
+    try:
+        existing = json.loads(Path(path).read_text(encoding='utf-8'))
+    except Exception:
+        return False
+    if not isinstance(existing, dict):
+        return False
+    if existing == payload:
+        return True
+    if payload.get('status') == 'skipped' and payload.get('reason') == 'unchanged':
+        return (
+            bool(payload.get('sha256'))
+            and existing.get('path') == payload.get('path')
+            and existing.get('sha256') == payload.get('sha256')
+            and existing.get('warnings') == payload.get('warnings')
+        )
+    if payload.get('status') == 'skipped':
+        return (
+            existing.get('reason') == payload.get('reason')
+            and existing.get('path') == payload.get('path')
+            and existing.get('sha256') == payload.get('sha256')
+            and existing.get('warnings') == payload.get('warnings')
+        )
+    return False
+
+
+def _text_file_sha256(path: Path) -> str:
+    try:
+        return sha256_text(Path(path).read_text(encoding='utf-8'))
+    except Exception:
+        return ''
+
+
+def _same_path(left: Path, right: Path) -> bool:
+    try:
+        return Path(left).expanduser().resolve() == Path(right).expanduser().resolve()
+    except Exception:
+        return Path(left).expanduser() == Path(right).expanduser()
+
+
 def _plugin_projection_is_current(*, source_tree: Path, source_sha: Path, target_tree: Path, target_sha: Path) -> bool:
     if not target_tree.is_dir():
         return False
@@ -359,7 +590,24 @@ def _remove_path(path: Path) -> None:
 
 
 def _system_codex_home() -> Path:
-    return Path(os.environ.get('CODEX_HOME') or (Path.home() / '.codex')).expanduser()
+    if os.environ.get('CCB_SOURCE_HOME'):
+        return current_provider_source_home() / '.codex'
+    raw = str(os.environ.get('CODEX_HOME') or '').strip()
+    if raw:
+        candidate = Path(raw).expanduser()
+        if not _looks_like_ccb_provider_home(candidate):
+            return candidate
+    return current_provider_source_home() / '.codex'
+
+
+def _looks_like_ccb_provider_home(path: Path) -> bool:
+    parts = Path(path).expanduser().parts
+    for index in range(0, max(len(parts) - 4, 0)):
+        if parts[index] != 'agents':
+            continue
+        if parts[index + 2] == 'provider-state' and parts[index + 4] == 'home':
+            return True
+    return False
 
 
 def _render_toml_document(payload: dict[str, object]) -> str:

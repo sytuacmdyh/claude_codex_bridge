@@ -66,9 +66,15 @@ def test_wait_for_replies_any_polls_until_reply_arrives(tmp_path: Path, monkeypa
             assert target == 'msg_1'
             return payloads.pop(0)
 
+    seen: list[bool] = []
+
+    def _connect(context, allow_restart_stale):
+        seen.append(allow_restart_stale)
+        return SimpleNamespace(client=_FakeClient())
+
     monkeypatch.setattr(
         'cli.services.wait.connect_mounted_daemon',
-        lambda context, allow_restart_stale: SimpleNamespace(client=_FakeClient()),
+        _connect,
     )
     monkeypatch.setattr('cli.services.wait.time.sleep', lambda value: None)
 
@@ -84,6 +90,7 @@ def test_wait_for_replies_any_polls_until_reply_arrives(tmp_path: Path, monkeypa
     assert summary.wait_status == 'satisfied'
     assert summary.replies[0]['reply_id'] == 'rep_1'
     assert summary.replies[0]['reply'] == 'done'
+    assert seen == [False]
 
 
 def test_wait_for_replies_quorum_uses_latest_attempt_per_agent(tmp_path: Path, monkeypatch) -> None:
@@ -139,9 +146,15 @@ def test_wait_for_replies_quorum_uses_latest_attempt_per_agent(tmp_path: Path, m
             assert target == 'msg_1'
             return payload
 
+    seen: list[bool] = []
+
+    def _connect(context, allow_restart_stale):
+        seen.append(allow_restart_stale)
+        return SimpleNamespace(client=_FakeClient())
+
     monkeypatch.setattr(
         'cli.services.wait.connect_mounted_daemon',
-        lambda context, allow_restart_stale: SimpleNamespace(client=_FakeClient()),
+        _connect,
     )
 
     summary = wait_for_replies(context, command)
@@ -154,6 +167,7 @@ def test_wait_for_replies_quorum_uses_latest_attempt_per_agent(tmp_path: Path, m
     assert summary.wait_status == 'satisfied'
     assert summary.replies[0]['reply_id'] == 'rep_new'
     assert summary.replies[0]['reply'] == 'final answer'
+    assert seen == [False]
 
 
 def test_wait_for_replies_returns_notice_when_heartbeat_arrives_first(tmp_path: Path, monkeypatch) -> None:
@@ -197,9 +211,15 @@ def test_wait_for_replies_returns_notice_when_heartbeat_arrives_first(tmp_path: 
             assert target == 'msg_1'
             return payload
 
+    seen: list[bool] = []
+
+    def _connect(context, allow_restart_stale):
+        seen.append(allow_restart_stale)
+        return SimpleNamespace(client=_FakeClient())
+
     monkeypatch.setattr(
         'cli.services.wait.connect_mounted_daemon',
-        lambda context, allow_restart_stale: SimpleNamespace(client=_FakeClient()),
+        _connect,
     )
 
     summary = wait_for_replies(context, command)
@@ -211,3 +231,4 @@ def test_wait_for_replies_returns_notice_when_heartbeat_arrives_first(tmp_path: 
     assert summary.replies[0]['notice'] is True
     assert summary.replies[0]['notice_kind'] == 'heartbeat'
     assert summary.replies[0]['job_id'] == 'job_1'
+    assert seen == [False]

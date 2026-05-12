@@ -23,7 +23,7 @@ class RetrySummary:
 def retry_attempt(context: CliContext, command: ParsedRetryCommand) -> RetrySummary:
     payload = invoke_mounted_daemon(
         context,
-        allow_restart_stale=True,
+        allow_restart_stale=False,
         request_fn=lambda client: client.retry(command.target),
     )
     return RetrySummary(

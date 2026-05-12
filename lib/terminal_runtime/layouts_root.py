@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from .layouts_models import TmuxLayoutBackend
+from .placeholders import pane_placeholder_argv
 
 
 def resolve_root_pane(
@@ -28,7 +29,10 @@ def resolve_root_pane(
 def detached_root_pane(backend: TmuxLayoutBackend, *, cwd: str, session_name: str) -> str:
     if session_name:
         if not backend.is_alive(session_name):
-            backend._tmux_run(['new-session', '-d', '-s', session_name, '-c', cwd], check=True)
+            backend._tmux_run(
+                ['new-session', '-d', '-s', session_name, '-c', cwd, *pane_placeholder_argv()],
+                check=True,
+            )
         cp = backend._tmux_run(
             ['list-panes', '-t', session_name, '-F', '#{pane_id}'],
             capture=True,

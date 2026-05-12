@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-from agents.models import AgentState
-
-from .events import record_mount_failed
+from .events import record_mount_failed, record_mount_superseded
 
 SUCCESS_RUNTIME_HEALTHS = frozenset({'healthy', 'restored'})
 
@@ -33,102 +31,75 @@ def start_mount_attempt(
 
 
 def persist_mount_exception(
-    starting,
+    finalized,
     *,
     project_id: str,
     agent_name: str,
     attempted_at: str,
     prior_health: str,
-    next_restart_count: int,
-    exc: Exception,
     event_store,
-    upsert_if_changed_fn,
+    reason: str,
 ) -> str:
-    failed = upsert_if_changed_fn(
-        starting,
-        state=AgentState.FAILED,
-        health='start-failed',
-        lifecycle_state='failed',
-        reconcile_state='failed',
-        restart_count=next_restart_count,
-        last_reconcile_at=attempted_at,
-        last_failure_reason=f'{type(exc).__name__}: {exc}',
-    )
     record_mount_failed(
         event_store,
         project_id=project_id,
         agent_name=agent_name,
         attempted_at=attempted_at,
         prior_health=prior_health,
-        runtime=failed,
-        reason=failed.last_failure_reason or 'mount-failed',
+        runtime=finalized,
+        reason=reason,
     )
-    return failed.health
+    return finalized.health
 
 
 def persist_mount_transient(
-    starting,
+    finalized,
     *,
-    runtime,
     project_id: str,
     agent_name: str,
     attempted_at: str,
     prior_health: str,
-    next_restart_count: int,
     reason: str,
     event_store,
-    upsert_if_changed_fn,
 ) -> str:
-    if runtime is None:
-        deferred = upsert_if_changed_fn(
-            starting,
-            state=AgentState.FAILED,
-            health='start-deferred',
-            lifecycle_state='degraded',
-            reconcile_state='deferred',
-            restart_count=next_restart_count,
-            last_reconcile_at=attempted_at,
-            last_failure_reason=reason,
-        )
-    else:
-        deferred = upsert_if_changed_fn(
-            starting,
-            state=runtime.state,
-            health=runtime.health,
-            lifecycle_state=runtime.lifecycle_state,
-            reconcile_state='deferred',
-            restart_count=next_restart_count,
-            last_reconcile_at=attempted_at,
-            last_failure_reason=reason,
-        )
     record_mount_failed(
         event_store,
         project_id=project_id,
         agent_name=agent_name,
         attempted_at=attempted_at,
         prior_health=prior_health,
-        runtime=deferred,
+        runtime=finalized,
         reason=reason,
     )
-    return deferred.health
+    return finalized.health
 
 
 def persist_mount_success(
-    refreshed,
-    *,
-    attempted_at: str,
-    next_restart_count: int,
-    upsert_if_changed_fn,
+    finalized,
 ):
-    return upsert_if_changed_fn(
-        refreshed,
-        state=AgentState.IDLE if refreshed.state is AgentState.STARTING else refreshed.state,
-        reconcile_state='steady',
-        restart_count=next_restart_count,
-        last_reconcile_at=attempted_at,
-        last_failure_reason=None,
-        lifecycle_state='idle' if refreshed.state is AgentState.STARTING else refreshed.lifecycle_state,
+    return finalized
+
+
+def persist_mount_superseded(
+    current,
+    *,
+    project_id: str,
+    agent_name: str,
+    attempted_at: str,
+    prior_health: str,
+    event_store,
+    attempt_id: str,
+) -> str:
+    record_mount_superseded(
+        event_store,
+        project_id=project_id,
+        agent_name=agent_name,
+        attempted_at=attempted_at,
+        prior_health=prior_health,
+        runtime=current,
+        attempt_id=attempt_id,
     )
+    return current.health
 
 
 def mount_or_reflow(agent_name: str, *, mount_agent_fn, remount_project_fn, should_reflow_project_mount_fn) -> None:
@@ -147,5 +118,6 @@ __all__ = [
     'persist_mount_exception',
     'persist_mount_transient',
     'persist_mount_success',
+    'persist_mount_superseded',
     'start_mount_attempt',
 ]

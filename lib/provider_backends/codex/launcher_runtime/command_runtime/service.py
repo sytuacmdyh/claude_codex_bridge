@@ -7,6 +7,10 @@ from typing import Callable
 
 from provider_core.caller_env import caller_context_env, provider_user_session_env
 from provider_backends.codex.runtime_artifacts import codex_runtime_artifact_layout
+from provider_backends.codex.session_authority import (
+    current_memory_projection_fingerprint,
+    current_provider_authority_fingerprint,
+)
 from provider_profiles.codex_home_config import codex_api_authority
 
 
@@ -17,13 +21,22 @@ def build_start_cmd(
     launch_session_id: str,
     *,
     load_resolved_provider_profile_fn: Callable[[Path], object | None],
-    prepare_codex_home_overrides_fn: Callable[[Path, object | None], dict[str, str]],
+    prepare_codex_home_overrides_fn: Callable[..., dict[str, str]],
     provider_start_parts_fn: Callable[[str], list[str]],
-    load_resume_session_id_fn: Callable[[object, Path], str | None],
+    load_resume_session_id_fn: Callable[..., str | None],
     build_codex_shell_prefix_fn: Callable[..., list[str]],
+    prepared_state: dict[str, object] | None = None,
 ) -> str:
     profile = load_resolved_provider_profile_fn(runtime_dir)
-    codex_home_overrides = prepare_codex_home_overrides_fn(runtime_dir, profile)
+    launch_context = prepared_state or {}
+    project_root = _path_or_none(launch_context.get('project_root'))
+    if project_root is None:
+        raise RuntimeError('Codex launch requires prepare_launch_context before build_start_cmd')
+    codex_home_overrides = prepare_codex_home_overrides_fn(
+        runtime_dir,
+        profile,
+        refresh_home=False,
+    )
     codex_args = _codex_args(
         command,
         spec,
@@ -55,6 +68,16 @@ def build_codex_shell_prefix(*, profile, provider_api_env_keys_fn: Callable[[str
     return [f'unset {key}' for key in sorted(provider_api_env_keys_fn('codex'))]
 
 
+def _path_or_none(value: object) -> Path | None:
+    raw = str(value or '').strip()
+    if not raw:
+        return None
+    try:
+        return Path(raw).expanduser()
+    except Exception:
+        return None
+
+
 def _codex_args(command, spec, runtime_dir: Path, *, profile, provider_start_parts_fn, load_resume_session_id_fn) -> list[str]:
     codex_args = provider_start_parts_fn('codex')
     codex_args.extend(['-c', 'disable_paste_burst=true'])
@@ -71,7 +94,13 @@ def _codex_args(command, spec, runtime_dir: Path, *, profile, provider_start_par
         )
     codex_args.extend(spec.startup_args)
     if command.restore:
-        session_id = load_resume_session_id_fn(spec, runtime_dir, profile)
+        session_id = load_resume_session_id_fn(
+            spec,
+            runtime_dir,
+            profile,
+            current_fingerprint=current_provider_authority_fingerprint(profile),
+            current_memory_fingerprint=current_memory_projection_fingerprint(runtime_dir),
+        )
         if session_id:
             codex_args.extend(['resume', session_id])
     return codex_args

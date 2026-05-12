@@ -19,6 +19,12 @@ class AgentRuntimePathMixin:
     def agent_dir(self, agent_name: str) -> Path:
         return self.agents_dir / normalize_agent_name(agent_name)
 
+    def agent_anchor_dir(self, agent_name: str) -> Path:
+        return self.ccb_dir / 'agents' / normalize_agent_name(agent_name)
+
+    def agent_private_memory_path(self, agent_name: str) -> Path:
+        return self.agent_anchor_dir(agent_name) / 'memory.md'
+
     def agent_spec_path(self, agent_name: str) -> Path:
         return self.agent_dir(agent_name) / 'agent.json'
 

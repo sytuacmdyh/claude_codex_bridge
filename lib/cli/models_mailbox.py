@@ -39,6 +39,8 @@ class ParsedPendCommand:
     project: str | None
     target: str
     count: int | None = None
+    observer_mode: str = 'snapshot'
+    detail: bool = False
     kind: str = 'pend'
 
 
@@ -46,6 +48,7 @@ class ParsedPendCommand:
 class ParsedQueueCommand:
     project: str | None
     target: str
+    detail: bool = False
     kind: str = 'queue'
 
 
@@ -91,6 +94,7 @@ class ParsedWatchCommand:
 class ParsedInboxCommand:
     project: str | None
     agent_name: str
+    detail: bool = False
     kind: str = 'inbox'
 
 

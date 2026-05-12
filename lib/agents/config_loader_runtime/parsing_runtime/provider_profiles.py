@@ -59,6 +59,11 @@ def parse_provider_profile(agent_name: str, value: Any) -> ProviderProfileSpec:
                 if 'inherit_commands' in raw
                 else True
             ),
+            inherit_memory=(
+                expect_bool(raw['inherit_memory'], field_name=f'agents.{agent_name}.provider_profile.inherit_memory')
+                if 'inherit_memory' in raw
+                else True
+            ),
         )
     except ValueError as exc:
         raise ConfigValidationError(f'agents.{agent_name}.provider_profile: {exc}') from exc

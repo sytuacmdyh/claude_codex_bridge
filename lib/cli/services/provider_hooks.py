@@ -1,12 +1,18 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+import json
 from pathlib import Path
 import sys
 
+from agents.models import RuntimeMode
 from provider_core.source_home import current_provider_source_home
 from provider_backends.claude.launcher_runtime import materialize_claude_home_config, resolve_claude_home_layout
+from provider_backends.codex.launcher_runtime import resolve_codex_home_layout
 from provider_backends.gemini.launcher_runtime.home import materialize_gemini_home_config
+from provider_backends.opencode.launcher import materialize_opencode_memory_config
 from provider_hooks.settings import build_hook_command, install_workspace_completion_hooks
+from provider_profiles.codex_home_config import materialize_codex_home_config
 from provider_profiles import (
     ResolvedProviderProfile,
     load_resolved_provider_profile,
@@ -73,6 +79,7 @@ def prepare_provider_workspace(
         spec=spec,
         runtime_dir=runtime_dir,
         resolved_profile=resolved_profile,
+        workspace_path=workspace_path,
     )
     prepare_workspace_provider_hooks(
         provider=spec.provider,
@@ -90,7 +97,39 @@ def prepare_provider_workspace(
     return resolved_profile
 
 
-def _materialize_provider_home(*, layout, spec, runtime_dir: Path, resolved_profile: ResolvedProviderProfile | None) -> None:
+def provider_workspace_path_for_prepare(
+    *,
+    command,
+    spec,
+    plan,
+    runtime_dir: Path,
+    launcher,
+) -> Path:
+    if getattr(spec, 'runtime_mode', None) is not RuntimeMode.PANE_BACKED:
+        return Path(plan.workspace_path)
+    resolve_run_cwd = getattr(launcher, 'resolve_run_cwd', None)
+    if resolve_run_cwd is None:
+        return Path(plan.workspace_path)
+    resolved = resolve_run_cwd(
+        command,
+        spec,
+        plan,
+        runtime_dir,
+        None,
+    )
+    if resolved is None:
+        return Path(plan.workspace_path)
+    return Path(resolved)
+
+
+def _materialize_provider_home(
+    *,
+    layout,
+    spec,
+    runtime_dir: Path,
+    resolved_profile: ResolvedProviderProfile | None,
+    workspace_path: Path,
+) -> None:
     provider = str(spec.provider or '').strip().lower()
     if provider == 'claude':
         home_root = resolve_claude_home_layout(runtime_dir, resolved_profile).home_root
@@ -98,6 +137,39 @@ def _materialize_provider_home(*, layout, spec, runtime_dir: Path, resolved_prof
             home_root,
             profile=resolved_profile,
             source_home=current_provider_source_home(),
+            project_root=layout.project_root,
+            agent_name=spec.name,
+            workspace_path=workspace_path,
+            memory_projection_event_path=layout.agent_events_path(spec.name),
+            memory_projection_marker_path=Path(runtime_dir) / 'claude-memory-projection.json',
+        )
+        _record_claude_binary_cache_drift_if_present(
+            layout=layout,
+            spec=spec,
+            runtime_dir=runtime_dir,
+            home_root=home_root,
+        )
+        return
+    if provider == 'codex':
+        materialize_codex_home_config(
+            resolve_codex_home_layout(runtime_dir, resolved_profile).codex_home,
+            profile=resolved_profile,
+            project_root=layout.project_root,
+            agent_name=spec.name,
+            workspace_path=workspace_path,
+            memory_projection_event_path=layout.agent_events_path(spec.name),
+            memory_projection_marker_path=Path(runtime_dir) / 'codex-memory-projection.json',
+        )
+        return
+    if provider == 'opencode':
+        materialize_opencode_memory_config(
+            project_root=layout.project_root,
+            agent_name=spec.name,
+            workspace_path=workspace_path,
+            config_path=layout.agent_provider_state_dir(spec.name, 'opencode') / 'opencode.json',
+            profile=resolved_profile,
+            event_path=layout.agent_events_path(spec.name),
+            marker_path=Path(runtime_dir) / 'opencode-memory-projection.json',
         )
         return
     if provider == 'gemini':
@@ -109,6 +181,11 @@ def _materialize_provider_home(*, layout, spec, runtime_dir: Path, resolved_prof
             ),
             profile=resolved_profile,
             source_home=current_provider_source_home(),
+            project_root=layout.project_root,
+            agent_name=spec.name,
+            workspace_path=workspace_path,
+            memory_projection_event_path=layout.agent_events_path(spec.name),
+            memory_projection_marker_path=Path(runtime_dir) / 'gemini-memory-projection.json',
         )
 
 
@@ -132,14 +209,75 @@ def provider_hook_home_root(
 
 
 def resolve_gemini_home_root(*, layout, agent_name: str, resolved_profile: ResolvedProviderProfile | None) -> Path:
-    if resolved_profile is not None and resolved_profile.runtime_home_path is not None:
-        return resolved_profile.runtime_home_path
+    del resolved_profile
     return layout.agent_provider_state_dir(agent_name, 'gemini') / 'home'
+
+
+def _record_claude_binary_cache_drift_if_present(*, layout, spec, runtime_dir: Path, home_root: Path) -> None:
+    versions_dir = Path(home_root) / '.local' / 'share' / 'claude' / 'versions'
+    signature = _claude_versions_cache_signature(versions_dir)
+    if signature is None:
+        return
+    marker_path = Path(runtime_dir) / 'claude-binary-cache-drift.json'
+    if _same_cached_signature(marker_path, signature):
+        return
+    payload = {
+        'record_type': 'agent_event',
+        'event_type': 'claude_binary_cache_drift',
+        'provider': 'claude',
+        'agent_name': spec.name,
+        'status': 'notice',
+        'reason': signature['reason'],
+        'versions_dir': str(versions_dir),
+        'version_count': len(signature['version_names']),
+        'version_names': signature['version_names'],
+        'created_at': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
+    }
+    try:
+        events_path = layout.agent_events_path(spec.name)
+        events_path.parent.mkdir(parents=True, exist_ok=True)
+        with events_path.open('a', encoding='utf-8') as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False) + '\n')
+        marker_path.parent.mkdir(parents=True, exist_ok=True)
+        marker_path.write_text(json.dumps(signature, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+    except OSError:
+        return
+
+
+def _claude_versions_cache_signature(versions_dir: Path) -> dict[str, object] | None:
+    try:
+        if versions_dir.is_symlink():
+            return {
+                'reason': 'versions_dir_symlink',
+                'versions_dir': str(versions_dir),
+                'version_names': [],
+            }
+        if not versions_dir.is_dir():
+            return None
+        version_names = sorted(child.name for child in versions_dir.iterdir() if not child.name.startswith('.'))
+    except OSError:
+        return None
+    if not version_names:
+        return None
+    return {
+        'reason': 'per_agent_versions_cache_present',
+        'versions_dir': str(versions_dir),
+        'version_names': version_names,
+    }
+
+
+def _same_cached_signature(marker_path: Path, signature: dict[str, object]) -> bool:
+    try:
+        payload = json.loads(marker_path.read_text(encoding='utf-8'))
+    except Exception:
+        return False
+    return isinstance(payload, dict) and payload == signature
 
 
 __all__ = [
     'prepare_provider_workspace',
     'prepare_workspace_provider_hooks',
+    'provider_workspace_path_for_prepare',
     'provider_hook_home_root',
     'resolve_gemini_home_root',
 ]

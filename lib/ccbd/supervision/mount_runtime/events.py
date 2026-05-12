@@ -18,6 +18,7 @@ def record_mount_started(event_store, *, project_id: str, agent_name: str, attem
             runtime_state=runtime.state.value,
             runtime_ref=runtime.runtime_ref,
             session_ref=runtime.session_ref,
+            details=({'mount_attempt_id': runtime.mount_attempt_id} if runtime.mount_attempt_id else {}),
         )
     )
 
@@ -42,6 +43,35 @@ def record_mount_failed(event_store, *, project_id: str, agent_name: str, attemp
     )
 
 
+def record_mount_superseded(
+    event_store,
+    *,
+    project_id: str,
+    agent_name: str,
+    attempted_at: str,
+    prior_health: str,
+    runtime,
+    attempt_id: str,
+) -> None:
+    event_store.append(
+        SupervisionEvent(
+            event_kind='mount_superseded',
+            project_id=project_id,
+            agent_name=agent_name,
+            occurred_at=attempted_at,
+            daemon_generation=runtime.daemon_generation,
+            desired_state=runtime.desired_state,
+            reconcile_state=runtime.reconcile_state,
+            prior_health=prior_health,
+            result_health=runtime.health,
+            runtime_state=runtime.state.value,
+            runtime_ref=runtime.runtime_ref,
+            session_ref=runtime.session_ref,
+            details={'mount_attempt_id': attempt_id},
+        )
+    )
+
+
 def record_mount_succeeded(event_store, *, project_id: str, agent_name: str, attempted_at: str, prior_health: str, runtime) -> None:
     event_store.append(
         SupervisionEvent(
@@ -62,4 +92,4 @@ def record_mount_succeeded(event_store, *, project_id: str, agent_name: str, att
     )
 
 
-__all__ = ['record_mount_failed', 'record_mount_started', 'record_mount_succeeded']
+__all__ = ['record_mount_failed', 'record_mount_started', 'record_mount_succeeded', 'record_mount_superseded']

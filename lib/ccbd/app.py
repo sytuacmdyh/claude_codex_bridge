@@ -4,10 +4,12 @@ from pathlib import Path
 
 from ccbd.app_runtime import (
     execute_project_stop as execute_project_stop_impl,
+    finalize_project_stop as finalize_project_stop_impl,
     heartbeat as heartbeat_impl,
     initialize_app,
     mount_agent_from_policy as mount_agent_from_policy_impl,
     persist_start_policy as persist_start_policy_impl,
+    prepare_project_stop as prepare_project_stop_impl,
     record_shutdown_report as record_shutdown_report_impl,
     record_startup_report as record_startup_report_impl,
     release_backend_ownership as release_backend_ownership_impl,
@@ -18,6 +20,7 @@ from ccbd.app_runtime import (
     shutdown as shutdown_impl,
     start as start_impl,
 )
+from ccbd.services.start_policy import recovery_start_options
 from ccbd.system import utc_now
 
 
@@ -57,6 +60,40 @@ class CcbdApp:
             self,
             force=force,
             trigger=trigger,
+            reason=reason,
+            clear_start_policy=clear_start_policy,
+        )
+
+    def prepare_project_stop(
+        self,
+        *,
+        force: bool,
+        trigger: str,
+        reason: str,
+    ):
+        return prepare_project_stop_impl(
+            self,
+            force=force,
+            trigger=trigger,
+            reason=reason,
+        )
+
+    def finalize_project_stop(
+        self,
+        *,
+        summary,
+        terminated_jobs,
+        trigger: str,
+        forced: bool,
+        reason: str,
+        clear_start_policy: bool,
+    ) -> None:
+        finalize_project_stop_impl(
+            self,
+            summary=summary,
+            terminated_jobs=terminated_jobs,
+            trigger=trigger,
+            forced=forced,
             reason=reason,
             clear_start_policy=clear_start_policy,
         )
@@ -117,6 +154,15 @@ class CcbdApp:
 
     def _remount_project_from_policy(self, reason: str) -> None:
         remount_project_from_policy_impl(self, reason)
+
+    def _mount_missing_runtime_requested(self, agent_name: str) -> bool:
+        del agent_name
+        try:
+            policy = self.start_policy_store.load()
+        except Exception:
+            policy = None
+        restore, auto_permission = recovery_start_options(policy)
+        return bool(policy is not None and (restore or auto_permission))
 
 
 __all__ = ['CcbdApp']

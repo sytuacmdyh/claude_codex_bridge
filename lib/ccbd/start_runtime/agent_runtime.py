@@ -48,7 +48,7 @@ def start_agent_runtime(
         relabel_project_namespace_pane_fn=relabel_project_namespace_pane_fn,
         same_tmux_socket_path_fn=same_tmux_socket_path_fn,
     )
-    runtime = runtime_service.attach(
+    attach_kwargs = dict(
         agent_name=agent_name,
         workspace_path=str(plan.workspace_path),
         backend_type=spec.runtime_mode.value,
@@ -74,6 +74,18 @@ def start_agent_runtime(
         managed_by='ccbd',
         binding_source='provider-session',
     )
+    registry = getattr(runtime_service, '_registry', None)
+    existing = registry.get(agent_name) if registry is not None else None
+    attempt_id = str(getattr(existing, 'mount_attempt_id', '') or '').strip() or None
+    if attempt_id and getattr(existing, 'reconcile_state', None) == 'starting':
+        runtime, applied = runtime_service.attach_mount_attempt_authority(
+            attempt_id=attempt_id,
+            **attach_kwargs,
+        )
+        if not applied:
+            runtime = runtime or (registry.get(agent_name) if registry is not None else None)
+    else:
+        runtime = runtime_service.attach(**attach_kwargs)
 
     actions_taken = list(binding_state.actions_taken)
     if command.restore and binding_state.agent_action != 'degraded':

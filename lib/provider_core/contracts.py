@@ -38,11 +38,19 @@ class ProviderSessionBinding:
 class ProviderRuntimeLauncher:
     provider: str
     launch_mode: Literal['simple_tmux', 'codex_tmux']
-    build_start_cmd: Callable[[ParsedStartCommand, AgentSpec, Path, str], str]
+    # prepare_runtime creates provider-local runtime artifacts.
+    # prepare_launch_context may then add project/agent/workspace/event context needed
+    # by launch command assembly. Callers must pass the final prepared_state to
+    # build_start_cmd; providers that depend on launch context should fail fast
+    # when required keys are missing instead of inferring identity from paths.
+    # resolve_run_cwd is also used during pre-launch provider preparation; in that
+    # phase launch_session_id is None and must not be treated as session authority.
+    build_start_cmd: Callable[..., str]
     build_session_payload: Callable[[CliContext, AgentSpec, WorkspacePlan, Path, Path, str, str, str, dict[str, object]], dict[str, object]]
     prepare_runtime: Callable[[Path], dict[str, object]] | None = None
+    prepare_launch_context: Callable[[CliContext, AgentSpec, WorkspacePlan, Path, dict[str, object]], dict[str, object]] | None = None
     post_launch: Callable[[object, str, Path, str, dict[str, object]], None] | None = None
-    resolve_run_cwd: Callable[[ParsedStartCommand, AgentSpec, WorkspacePlan, Path, str], Path | str | None] | None = None
+    resolve_run_cwd: Callable[[ParsedStartCommand, AgentSpec, WorkspacePlan, Path, str | None], Path | str | None] | None = None
 
     def __post_init__(self) -> None:
         provider = str(self.provider or '').strip().lower()

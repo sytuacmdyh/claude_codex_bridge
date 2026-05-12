@@ -5,7 +5,9 @@ from pathlib import Path
 
 from agents.policy import resolve_agent_launch_policy
 from agents.store import AgentRestoreStore, AgentSpecStore
-from cli.services.provider_hooks import prepare_provider_workspace
+from cli.services.provider_hooks import prepare_provider_workspace, provider_workspace_path_for_prepare
+from cli.services.runtime_launch_runtime import runtime_launcher
+from provider_profiles import validate_provider_runtime_home_uniqueness
 from workspace.binding import WorkspaceBindingStore
 from workspace.materializer import WorkspaceMaterializer
 from workspace.planner import WorkspacePlanner
@@ -45,6 +47,11 @@ def prepare_start_agents(
     validator = WorkspaceValidator(binding_store)
     prepared: list[PreparedStartAgent] = []
 
+    try:
+        validate_provider_runtime_home_uniqueness(layout=paths, specs=config.agents.values())
+    except ValueError as exc:
+        raise RuntimeError(str(exc)) from exc
+
     for agent_name in targets:
         spec = config.agents[agent_name]
         spec_store.save(spec)
@@ -57,10 +64,17 @@ def prepare_start_agents(
         materializer.materialize(plan)
         if plan.binding_path is not None:
             binding_store.save(plan)
+        provider_workspace_path = provider_workspace_path_for_prepare(
+            command=context.command,
+            spec=spec,
+            plan=plan,
+            runtime_dir=paths.agent_provider_runtime_dir(agent_name, spec.provider),
+            launcher=runtime_launcher(spec.provider),
+        )
         prepare_provider_workspace(
             layout=paths,
             spec=spec,
-            workspace_path=plan.workspace_path,
+            workspace_path=provider_workspace_path,
             completion_dir=paths.agent_provider_runtime_dir(agent_name, spec.provider) / 'completion',
             agent_name=agent_name,
             refresh_profile=True,

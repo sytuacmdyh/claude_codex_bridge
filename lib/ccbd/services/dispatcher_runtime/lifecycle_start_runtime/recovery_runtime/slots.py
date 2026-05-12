@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from agents.models import AgentState
+from agents.models import AgentState, AgentValidationError
 from ccbd.api_models import TargetKind
 from ccbd.services.runtime_recovery_policy import (
     HARD_BLOCKED_RUNTIME_HEALTHS,
@@ -45,8 +45,18 @@ def _refreshed_slot(slot: QueuedTargetSlot, refreshed):
 
 def refresh_slot_runtime_for_start(dispatcher, slot: QueuedTargetSlot) -> QueuedTargetSlot | None:
     runtime = slot.runtime
-    if slot.target_kind is not TargetKind.AGENT or runtime is None:
+    if slot.target_kind is not TargetKind.AGENT:
         return slot
+    if runtime is None or runtime.state in {AgentState.STOPPED, AgentState.FAILED}:
+        if dispatcher._runtime_service is None:
+            return None
+        try:
+            ensured = dispatcher._runtime_service.ensure_ready(slot.target_name)
+        except AgentValidationError:
+            return None
+        if ensured is None or ensured.state not in RUNNABLE_AGENT_STATES:
+            return None
+        return replace(slot, runtime=ensured)
     if runtime.state is not AgentState.DEGRADED:
         return slot
 
@@ -65,13 +75,23 @@ def _iter_queued_runtimes(dispatcher):
         if dispatcher._state.queue_depth(agent_name) == 0:
             continue
         runtime = dispatcher._registry.get(agent_name)
-        if runtime is None or runtime.state not in RUNNABLE_AGENT_STATES:
+        if runtime is None or runtime.state in {AgentState.STOPPED, AgentState.FAILED}:
+            yield agent_name, runtime
+            continue
+        if runtime.state not in RUNNABLE_AGENT_STATES:
             continue
         yield agent_name, runtime
 
 
 def iter_runnable_agent_slots(dispatcher):
     for agent_name, runtime in _iter_queued_runtimes(dispatcher):
+        if runtime is None:
+            yield QueuedTargetSlot(
+                target_kind=TargetKind.AGENT,
+                target_name=agent_name,
+                runtime=None,
+            )
+            continue
         if runtime.state is AgentState.DEGRADED:
             action = _degraded_runtime_action(dispatcher, runtime)
             if action in {"blocked", "drop"}:

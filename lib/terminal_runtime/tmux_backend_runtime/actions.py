@@ -8,6 +8,7 @@ from terminal_runtime.tmux import default_detached_session_name as _default_deta
 from terminal_runtime.tmux_attach import parse_session_name as _parse_tmux_session_name_impl
 from terminal_runtime.tmux_attach import should_attach_selected_pane as _should_attach_selected_tmux_pane_impl
 from terminal_runtime.tmux_input import copy_mode_is_active as _tmux_copy_mode_is_active_impl
+from terminal_runtime.placeholders import pane_placeholder_argv
 
 
 def activate_tmux_pane(backend, pane_id: str) -> None:
@@ -132,7 +133,7 @@ def resolve_parent_pane(backend, parent_pane: str | None) -> str | None:
 
 def create_detached_root_pane(backend, *, cwd: str) -> str:
     session_name = _default_detached_session_name_impl(cwd=cwd, pid=os.getpid(), now_ts=time.time())
-    backend._tmux_run(["new-session", "-d", "-s", session_name, "-c", cwd], check=True)
+    backend._tmux_run(["new-session", "-d", "-s", session_name, "-c", cwd, *pane_placeholder_argv()], check=True)
     cp = backend._tmux_run(
         ["list-panes", "-t", session_name, "-F", "#{pane_id}"],
         capture=True,
