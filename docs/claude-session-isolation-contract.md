@@ -153,6 +153,9 @@ When `ccb` starts a managed Claude agent:
   metadata such as `oauthAccount` and onboarding state from the source
   `.claude.json` on each launch, while preserving managed workspace trust
   records already written under the private managed home
+- managed `.claude.json` projection must refresh inherited top-level
+  `mcpServers` from the source `.claude.json` when config inheritance is
+  enabled
 - managed `.claude.json` projection must not copy source workspace trust records
   as conversation authority, and must not copy source API-key secrets such as
   `primaryApiKey`

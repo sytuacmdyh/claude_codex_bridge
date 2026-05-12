@@ -851,7 +851,24 @@ def test_materialize_claude_home_config_refreshes_login_metadata_without_replaci
                 },
                 'hasCompletedOnboarding': True,
                 'lastOnboardingVersion': '2.1.97',
+                'mcpServers': {
+                    'context7': {
+                        'type': 'stdio',
+                        'command': 'npx',
+                        'args': ['-y', '@upstash/context7-mcp'],
+                    },
+                },
                 '/source/workspace': {'hasTrustDialogAccepted': True},
+                'projects': {
+                    '/source/workspace': {
+                        'mcpServers': {
+                            'workspace-only': {
+                                'type': 'stdio',
+                                'command': 'ignored',
+                            }
+                        }
+                    }
+                },
                 'primaryApiKey': 'must-not-project',
             },
             ensure_ascii=False,
@@ -879,9 +896,53 @@ def test_materialize_claude_home_config_refreshes_login_metadata_without_replaci
     assert payload['oauthAccount']['organizationUuid'] == 'org-source'
     assert payload['hasCompletedOnboarding'] is True
     assert payload['lastOnboardingVersion'] == '2.1.97'
+    assert payload['mcpServers']['context7']['command'] == 'npx'
+    assert payload['mcpServers']['context7']['args'] == ['-y', '@upstash/context7-mcp']
     assert payload['/managed/workspace']['hasTrustDialogAccepted'] is True
     assert '/source/workspace' not in payload
+    assert 'projects' not in payload
+    assert 'workspace-only' not in payload['mcpServers']
     assert 'primaryApiKey' not in payload
+
+
+def test_materialize_claude_home_config_strips_top_level_mcp_servers_without_config_inheritance(
+    tmp_path: Path,
+) -> None:
+    source_home = tmp_path / 'system-home'
+    target_home = tmp_path / 'managed-home'
+    source_trust = source_home / '.claude.json'
+    target_trust = target_home / '.claude.json'
+    source_trust.parent.mkdir(parents=True, exist_ok=True)
+    target_trust.parent.mkdir(parents=True, exist_ok=True)
+    source_trust.write_text(
+        json.dumps(
+            {'mcpServers': {'source': {'type': 'stdio', 'command': 'source-mcp'}}},
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding='utf-8',
+    )
+    target_trust.write_text(
+        json.dumps(
+            {
+                'mcpServers': {'stale': {'type': 'stdio', 'command': 'stale-mcp'}},
+                '/managed/workspace': {'hasTrustDialogAccepted': True},
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding='utf-8',
+    )
+
+    layout = materialize_claude_home_config(
+        target_home,
+        profile=ProviderProfileSpec(inherit_config=False),
+        source_home=source_home,
+    )
+
+    payload = json.loads(layout.trust_path.read_text(encoding='utf-8'))
+    assert 'mcpServers' not in payload
+    assert payload['/managed/workspace']['hasTrustDialogAccepted'] is True
 
 
 def test_materialize_claude_home_config_strips_login_metadata_when_auth_not_inherited(

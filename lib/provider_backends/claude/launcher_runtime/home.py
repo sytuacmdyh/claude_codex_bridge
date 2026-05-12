@@ -37,6 +37,7 @@ _CLAUDE_JSON_AUTH_COMPANION_KEYS = (
     'hasAvailableSubscription',
     'subscriptionNoticeCount',
 )
+_CLAUDE_JSON_CONFIG_KEYS = ('mcpServers',)
 _MACOS_KEYCHAIN_CLAUDE_SERVICES = ('Claude Code-credentials', 'Claude Code-custom-oauth', 'Claude Code')
 
 
@@ -475,6 +476,13 @@ def _projected_claude_json_payload(
     merged = dict(existing or {})
     for key in _CLAUDE_JSON_AUTH_SECRET_KEYS:
         merged.pop(key, None)
+    for key in _CLAUDE_JSON_CONFIG_KEYS:
+        merged.pop(key, None)
+    if _inherits_config(profile):
+        for key in _CLAUDE_JSON_CONFIG_KEYS:
+            value = source_payload.get(key)
+            if isinstance(value, dict):
+                merged[key] = value
     if not _inherits_auth(profile):
         for key in _CLAUDE_JSON_AUTH_METADATA_KEYS:
             merged.pop(key, None)
