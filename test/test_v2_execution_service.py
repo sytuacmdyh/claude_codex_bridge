@@ -1844,7 +1844,7 @@ def test_execution_service_codex_adapter_follows_rebound_session_binding(
         json.dumps({"type": "session_meta", "payload": {"cwd": str(work_dir)}}) + "\n",
         encoding='utf-8',
     )
-    new_log.write_text(
+    new_log_text = (
         "\n".join(
             [
                 json.dumps({"type": "session_meta", "payload": {"cwd": str(work_dir)}}),
@@ -1890,8 +1890,7 @@ def test_execution_service_codex_adapter_follows_rebound_session_binding(
                 ),
             ]
         )
-        + "\n",
-        encoding='utf-8',
+        + "\n"
     )
     work_dir_str = str(work_dir)
 
@@ -1930,6 +1929,7 @@ def test_execution_service_codex_adapter_follows_rebound_session_binding(
     job = _anchored_job_for_provider('codex', fixed_req_id, body='prompt')
     service.start(job, runtime_context=_runtime_context(work_dir))
 
+    new_log.write_text(new_log_text, encoding='utf-8')
     session.codex_session_path = str(new_log)
     session.codex_session_id = 'new-session'
     session.data = {**session.data, 'codex_session_path': str(new_log), 'codex_session_id': 'new-session'}
